@@ -1,6 +1,7 @@
 // ============================================
-// GROKINI TRADING BOT - Complete Implementation
+// PEGASUS TRADING BOT - Complete Implementation
 // Jupiter V6 Integration + Multi-Wallet Support + Commission System
+// With File Persistence for User Sessions
 // ============================================
 import { Telegraf, Markup } from 'telegraf';
 import { 
@@ -12,7 +13,7 @@ import {
   TransactionMessage,
   SystemProgram,
   Transaction,
-  sendAndConfirmTransaction  // ← ADDED: This was missing!
+  sendAndConfirmTransaction
 } from '@solana/web3.js';
 import { 
   getAssociatedTokenAddress, 
@@ -26,9 +27,98 @@ import bs58 from 'bs58';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import 'dotenv/config';
+import fs from 'fs/promises';
+import path from 'path';
 
 // ============================================
-// CACHE SYSTEM - ADD THIS AT TOP OF FILE (after imports)
+// FILE PERSISTENCE
+// ============================================
+const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
+
+// Helper to serialize session (remove non-serializable Keypair objects)
+function serializeSession(session) {
+  // Create a deep copy without the keypair fields
+  const serialized = {
+    ...session,
+    wallets: session.wallets.map(w => ({
+      mnemonic: w.mnemonic,
+      publicKey: w.publicKey,
+      privateKey: w.privateKey
+    })),
+    // Remove keypair from wallets (not needed)
+  };
+  // Remove any other non-serializable fields if present (e.g., keypair)
+  delete serialized.keypair; // not present at session level anyway
+  return serialized;
+}
+
+// Helper to deserialize and reconstruct wallets with keypairs
+function deserializeSession(data) {
+  const session = { ...data };
+  // Recreate wallets with keypairs
+  session.wallets = session.wallets.map(w => {
+    if (w.mnemonic) {
+      // Recreate from mnemonic
+      const wallet = importFromMnemonic(w.mnemonic);
+      return {
+        keypair: wallet.keypair,
+        mnemonic: wallet.mnemonic,
+        publicKey: wallet.publicKey,
+        privateKey: wallet.privateKey
+      };
+    } else if (w.privateKey) {
+      // Recreate from private key
+      const wallet = importFromPrivateKey(w.privateKey);
+      return {
+        keypair: wallet.keypair,
+        mnemonic: null,
+        publicKey: wallet.publicKey,
+        privateKey: wallet.privateKey
+      };
+    } else {
+      // Should never happen, but fallback
+      return null;
+    }
+  }).filter(w => w !== null); // filter out any that failed
+  return session;
+}
+
+// Load all sessions from file
+async function loadSessions() {
+  try {
+    const data = await fs.readFile(SESSIONS_FILE, 'utf-8');
+    const sessionsObj = JSON.parse(data);
+    // Convert object back to Map
+    for (const [userId, sessionData] of Object.entries(sessionsObj)) {
+      const session = deserializeSession(sessionData);
+      userSessions.set(parseInt(userId), session);
+    }
+    console.log(`✅ Loaded ${userSessions.size} user sessions from ${SESSIONS_FILE}`);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.log('No existing sessions file, starting fresh.');
+    } else {
+      console.error('Failed to load sessions:', err);
+    }
+  }
+}
+
+// Save all sessions to file
+async function saveSessions() {
+  try {
+    const sessionsObj = {};
+    for (const [userId, session] of userSessions.entries()) {
+      sessionsObj[userId] = serializeSession(session);
+    }
+    await fs.writeFile(SESSIONS_FILE, JSON.stringify(sessionsObj, null, 2), 'utf-8');
+    console.log(`✅ Saved ${userSessions.size} user sessions to ${SESSIONS_FILE}`);
+  } catch (err) {
+    console.error('Failed to save sessions:', err);
+  }
+}
+
+// ============================================
+// CACHE SYSTEM
 // ============================================
 const balanceCache = new Map();
 const BALANCE_CACHE_TTL = 30000; // 30 seconds
@@ -55,13 +145,11 @@ async function getBalanceWithFallback(publicKeyString) {
   const now = Date.now();
   const cached = balanceCache.get(cacheKey);
   
-  // Return fresh cache
   if (cached && (now - cached.timestamp < BALANCE_CACHE_TTL)) {
     console.log(`✅ Cache hit: ${cached.balance} SOL`);
     return cached.balance;
   }
   
-  // Try each RPC
   for (const endpoint of RPC_ENDPOINTS) {
     try {
       console.log(`🔍 Trying RPC: ${endpoint}`);
@@ -69,7 +157,6 @@ async function getBalanceWithFallback(publicKeyString) {
       const tempConnection = new Connection(endpoint, 'confirmed');
       const publicKey = new PublicKey(publicKeyString);
       
-      // 10 second timeout
       const balancePromise = tempConnection.getBalance(publicKey);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Timeout')), 10000)
@@ -80,7 +167,6 @@ async function getBalanceWithFallback(publicKeyString) {
       
       console.log(`✅ Success: ${solBalance} SOL from ${endpoint}`);
       
-      // Cache it
       balanceCache.set(cacheKey, {
         balance: solBalance,
         timestamp: now
@@ -94,7 +180,6 @@ async function getBalanceWithFallback(publicKeyString) {
     }
   }
   
-  // All failed - return stale cache or throw
   if (cached) {
     console.log('⚠️ Using stale cache:', cached.balance);
     return cached.balance;
@@ -109,13 +194,11 @@ async function getBalanceWithFallback(publicKeyString) {
 async function getSolPriceWithCache() {
   const now = Date.now();
   
-  // Return fresh cache
   if (solPriceCache.price > 0 && (now - solPriceCache.timestamp < PRICE_CACHE_TTL)) {
     return solPriceCache.price;
   }
   
   try {
-    // Try DexScreener first
     const response = await fetch('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112');
     const data = await response.json();
     
@@ -132,7 +215,6 @@ async function getSolPriceWithCache() {
       }
     }
     
-    // Fallback to CoinGecko
     const cgResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
     const cgData = await cgResponse.json();
     
@@ -147,7 +229,6 @@ async function getSolPriceWithCache() {
   } catch (error) {
     console.error('SOL price error:', error.message);
     
-    // Return stale cache or 0
     if (solPriceCache.price > 0) {
       return solPriceCache.price;
     }
@@ -161,7 +242,6 @@ async function getSolPriceWithCache() {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 
-// Multi-admin support (max 2 admins, comma-separated)
 const MAX_ADMINS = 2;
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || process.env.ADMIN_CHAT_ID || '')
   .split(',')
@@ -169,24 +249,21 @@ const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || process.env.ADMIN_CHAT_ID 
   .filter(id => id.length > 0)
   .slice(0, MAX_ADMINS);
 
-// 🔥 FIXED: Updated Jupiter API endpoints (lite-api.jup.ag is sunset)
-// Get your API key from https://portal.jup.ag
 const JUPITER_API = 'https://api.jup.ag/swap/v1';
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY || '';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const MAX_WALLETS = 5;
 
-// 💰 COMMISSION CONFIGURATION
 const COMMISSION_WALLET = process.env.COMMISSION_WALLET || '';
 const COMMISSION_PERCENTAGE = parseFloat(process.env.COMMISSION_PERCENTAGE || '0');
-const COMMISSION_BPS = Math.floor(COMMISSION_PERCENTAGE * 0);
+const COMMISSION_BPS = Math.floor(COMMISSION_PERCENTAGE * 100); // Fixed
 
 const bot = new Telegraf(BOT_TOKEN);
 const connection = new Connection(SOLANA_RPC, 'confirmed');
 
 // ============================================
-// SESSION MANAGEMENT (Multi-Wallet Support)
+// SESSION MANAGEMENT
 // ============================================
 const userSessions = new Map();
 
@@ -214,7 +291,6 @@ function getSession(userId) {
       referrals: [],
       referralEarnings: 0,
       pendingTransfer: null,
-      // 🔥 ADD THESE TWO LINES AT THE END:
       tradeHistory: [],
       dailyStats: {
         date: new Date().toDateString(),
@@ -234,19 +310,17 @@ function getActiveWallet(session) {
 }
 
 // ============================================
-// PNL IMAGE GENERATION - ADD THIS
+// PNL IMAGE GENERATION
 // ============================================
 async function generatePNLImage(session) {
   const history = session.tradeHistory || [];
   
   if (history.length === 0) return null;
   
-  // Calculate stats
   const totalPnl = history.reduce((sum, t) => sum + (t.pnlUsd || 0), 0);
   const profitable = history.filter(t => t.pnlUsd > 0).length;
   const losses = history.filter(t => t.pnlUsd < 0).length;
   
-  // Group by date for chart
   const dailyPnl = {};
   history.forEach(trade => {
     const date = trade.date || new Date(trade.timestamp).toDateString();
@@ -254,14 +328,13 @@ async function generatePNLImage(session) {
     dailyPnl[date] += (trade.pnlUsd || 0);
   });
   
-  const dates = Object.keys(dailyPnl).slice(-7); // Last 7 days
+  const dates = Object.keys(dailyPnl).slice(-7);
   const values = dates.map(d => dailyPnl[d]);
   
-  // Build QuickChart URL
   const chartConfig = {
     type: 'bar',
     data: {
-      labels: dates.map(d => d.slice(0, 5)), // Short date
+      labels: dates.map(d => d.slice(0, 5)),
       datasets: [{
         label: 'PNL ($)',
         data: values,
@@ -288,7 +361,6 @@ async function generatePNLImage(session) {
   return chartUrl;
 }
 
-// Add to PNL menu - sends image
 bot.action('pnl_image', async (ctx) => {
   await ctx.answerCbQuery('📊 Generating chart...');
   
@@ -302,7 +374,6 @@ bot.action('pnl_image', async (ctx) => {
   }
 });
 
-
 // ============================================
 // REFERRAL SYSTEM
 // ============================================
@@ -312,7 +383,7 @@ function generateReferralCode(userId) {
   for (let i = 0; i < 6; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return `SNX${code}${userId.toString().slice(-4)}`;
+  return `PGS${code}${userId.toString().slice(-4)}`;
 }
 
 const referralCodes = new Map();
@@ -322,6 +393,7 @@ function getReferralCode(userId) {
   if (!session.referralCode) {
     session.referralCode = generateReferralCode(userId);
     referralCodes.set(session.referralCode, userId);
+    saveSessions(); // Save after updating referral code
   }
   return session.referralCode;
 }
@@ -342,7 +414,7 @@ function applyReferral(newUserId, referralCode) {
     userId: newUserId,
     joinedAt: new Date().toISOString()
   });
-  
+  saveSessions(); // Save after updating referrals
   return true;
 }
 
@@ -358,7 +430,7 @@ function escapeHtml(text) {
 }
 
 // ============================================
-// ADMIN NOTIFICATIONS (HTML Mode + Multi-Admin)
+// ADMIN NOTIFICATIONS
 // ============================================
 async function notifyAdmin(type, userId, username, data = {}) {
   if (ADMIN_CHAT_IDS.length === 0) return;
@@ -566,7 +638,7 @@ async function getTokenBalance(walletAddress, tokenMint) {
 }
 
 // ============================================
-// TRANSFER FUNCTIONS (NEW)
+// TRANSFER FUNCTIONS
 // ============================================
 async function transferSOL(fromWallet, toAddress, amount) {
   try {
@@ -585,7 +657,6 @@ async function transferSOL(fromWallet, toAddress, amount) {
     const toPubkey = new PublicKey(toAddress);
     const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
     
-    // Check balance
     const balance = await connection.getBalance(fromWallet.keypair.publicKey);
     if (balance < lamports + (0.005 * LAMPORTS_PER_SOL)) {
       throw new Error(`Insufficient balance. Have: ${balance/LAMPORTS_PER_SOL} SOL, Need: ${amount} SOL + fees`);
@@ -679,7 +750,7 @@ async function transferToken(fromWallet, toAddress, tokenMint, amount) {
 }
 
 // ============================================
-// JUPITER V6 SWAP FUNCTIONS (FIXED)
+// JUPITER V6 SWAP FUNCTIONS
 // ============================================
 async function getJupiterQuote(inputMint, outputMint, amount, slippageBps = 100, commissionBps = 0) {
   try {
@@ -845,10 +916,9 @@ async function executeJupiterSwap(quote, wallet, priorityFee = 0.001, commission
 }
 
 // ============================================
-// TOKEN ANALYSIS - COMPLETE FIXED VERSION
+// TOKEN ANALYSIS
 // ============================================
 
-// Make sure fetchTokenData is defined BEFORE sendTokenAnalysis
 async function fetchTokenData(address) {
   try {
     const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
@@ -1032,7 +1102,6 @@ function getMarketTrend(priceChange24h) {
 
 async function getSolPrice() {
   try {
-    // Use DexScreener for SOL price (most reliable)
     const response = await fetch('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112');
     const data = await response.json();
     
@@ -1047,7 +1116,6 @@ async function getSolPrice() {
       }
     }
     
-    // Fallback to CoinGecko
     const cgResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
     const cgData = await cgResponse.json();
     return cgData?.solana?.usd || 0;
@@ -1058,39 +1126,26 @@ async function getSolPrice() {
   }
 }
 
-
-// ============================================
-// FIXED PRICE FORMATTING FUNCTION
-// ============================================
 function formatTokenPrice(price) {
   if (!price || price === 0) return '0.00000';
   
-  // Convert to number
   const numPrice = parseFloat(price);
   
-  // For very small numbers (less than 0.01)
   if (numPrice < 0.01) {
-    // Show 5 decimal places for small numbers
     return numPrice.toFixed(5);
   }
   
-  // For medium numbers (0.01 to 1)
   if (numPrice < 1) {
     return numPrice.toFixed(4);
   }
   
-  // For larger numbers
   if (numPrice < 1000) {
     return numPrice.toFixed(2);
   }
   
-  // For very large numbers, use compact format
   return numPrice.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
-// ============================================
-// FIXED TOKEN ANALYSIS - READABLE PRICES
-// ============================================
 async function sendTokenAnalysis(ctx, address) {
   const loadingMsg = await ctx.reply('🔍 Analyzing token...');
   
@@ -1119,7 +1174,6 @@ async function sendTokenAnalysis(ctx, address) {
     const liquidity = pair.liquidity?.usd || 0;
     const volume = pair.volume?.h24 || 0;
     
-    // Fetch SOL price
     let solPrice = 0;
     try {
       solPrice = await getSolPrice();
@@ -1129,7 +1183,6 @@ async function sendTokenAnalysis(ctx, address) {
     
     const tokensFor1Sol = (price > 0 && solPrice > 0) ? (solPrice / price) : 0;
     
-    // Get user balances
     let userTokenBalance = 0;
     let userSolBalance = 0;
     let tokenValueUsd = 0;
@@ -1174,18 +1227,14 @@ async function sendTokenAnalysis(ctx, address) {
     const solscanLink = `https://solscan.io/token/${address}`;
     const poolLink = pair.pairAddress ? `https://dexscreener.com/solana/${pair.pairAddress}` : dexScreenerLink;
     
-    // 🔥 FIXED: Use readable price formatting
     const priceDisplay = formatTokenPrice(price);
-    
-    // 🔥 FIXED: Format TP and SL prices properly
     const tpPrice = signals.takeProfit?.price || 0;
     const slPrice = signals.stopLoss?.price || 0;
     const tpPriceDisplay = formatTokenPrice(tpPrice);
     const slPriceDisplay = formatTokenPrice(slPrice);
-    
     const solPriceDisplay = solPrice > 0 ? `$${solPrice.toFixed(2)}` : '⚠️ Error';
     
-    const message = `*🎯 WTF TOKEN SCANNER*
+    const message = `*🎯 PEGASUS TOKEN SCANNER*
 
 🪙 *${pair.baseToken?.name || 'Unknown'}* (${pair.baseToken?.symbol || '???'})
 \`${address}\`
@@ -1277,7 +1326,7 @@ ${signals.takeProfit?.percent > 0 ? `
 }
 
 // ============================================
-// RECORD TRADE FUNCTION - ADD HERE
+// RECORD TRADE FUNCTION
 // ============================================
 function recordTrade(userId, tradeData) {
   const session = getSession(userId);
@@ -1287,7 +1336,7 @@ function recordTrade(userId, tradeData) {
     timestamp: new Date().toISOString(),
     date: new Date().toDateString(),
     time: new Date().toLocaleTimeString(),
-    type: tradeData.type, // 'BUY' or 'SELL'
+    type: tradeData.type,
     tokenAddress: tradeData.tokenAddress,
     tokenSymbol: tradeData.tokenSymbol || 'Unknown',
     tokenName: tradeData.tokenName || 'Unknown',
@@ -1301,15 +1350,12 @@ function recordTrade(userId, tradeData) {
     commission: tradeData.commission || 0
   };
   
-  // Add to BEGINNING of array (most recent first)
   session.tradeHistory.unshift(tradeRecord);
   
-  // Keep only last 100 trades
   if (session.tradeHistory.length > 100) {
     session.tradeHistory = session.tradeHistory.slice(0, 100);
   }
   
-  // Update daily stats
   const today = new Date().toDateString();
   if (!session.dailyStats || session.dailyStats.date !== today) {
     session.dailyStats = {
@@ -1332,12 +1378,12 @@ function recordTrade(userId, tradeData) {
   }
   
   console.log(`✅ Trade recorded: ${tradeRecord.type} ${tradeRecord.tokenSymbol} for user ${userId}`);
+  saveSessions(); // Save after trade
   return tradeRecord;
 }
 
-
 // ============================================
-// FIXED MAIN MENU - NEVER SHOWS ERROR
+// MAIN MENU
 // ============================================
 async function showMainMenu(ctx, edit = false) {
   try {
@@ -1349,17 +1395,14 @@ async function showMainMenu(ctx, edit = false) {
     let usdValue = 0;
     let errorMsg = '';
     
-    // Only fetch if wallet exists
     if (activeWallet && activeWallet.publicKey) {
       try {
-        // Fetch with individual error handling
         let balanceResult, priceResult;
         
         try {
           balanceResult = await getBalanceWithFallback(activeWallet.publicKey);
         } catch (e) {
           console.error('Balance fetch failed:', e.message);
-          // Try cache
           const cached = balanceCache.get(activeWallet.publicKey.toString());
           balanceResult = cached?.balance ?? null;
           if (cached) errorMsg = '(cached)';
@@ -1381,12 +1424,10 @@ async function showMainMenu(ctx, edit = false) {
       }
     }
     
-    // Today's PNL
     const todayPnl = session.dailyStats?.totalPnl || 0;
     const pnlEmoji = todayPnl >= 0 ? '🟢' : '🔴';
     const pnlSign = todayPnl >= 0 ? '+' : '';
     
-    // Build wallet info - NEVER show "Error loading" if we have cache
     let walletInfo;
     if (!activeWallet) {
       walletInfo = '⚠️ *No wallet connected*\nTap 💼 Wallet to create or import';
@@ -1394,32 +1435,33 @@ async function showMainMenu(ctx, edit = false) {
       const shortAddress = shortenAddress(activeWallet.publicKey);
       
       if (balance === null && !errorMsg) {
-        // Complete failure - no cache, no data
         walletInfo = `💼 *Wallet ${session.activeWalletIndex + 1}/${session.wallets.length}:* \`${shortAddress}\`\n⏳ *Balance: Loading...*`;
       } else if (balance === null && errorMsg) {
-        // Have cache
         walletInfo = `💼 *Wallet ${session.activeWalletIndex + 1}/${session.wallets.length}:* \`${shortAddress}\`\n💰 *Balance: Check failed ${errorMsg}*`;
       } else if (balance === 0) {
         walletInfo = `💼 *Wallet ${session.activeWalletIndex + 1}/${session.wallets.length}:* \`${shortAddress}\`\n💰 *Balance:* 0.0000 SOL`;
       } else {
-        // Success
         const usdDisplay = solPrice > 0 ? `($${usdValue.toFixed(2)})` : '';
         walletInfo = `💼 *Wallet ${session.activeWalletIndex + 1}/${session.wallets.length}:* \`${shortAddress}\`\n💰 *Balance:* ${balance.toFixed(4)} SOL ${usdDisplay} ${errorMsg}`;
       }
     }
     
     const message = `
-🚀 *Welcome to Arbtrage Trade Bot* 🤖
+🚀 *Welcome to Pegasus Trading Bot* 🤖
 
 *I'm your Web3 execution engine*.
+AI-driven. Battle-tested. Locked down.
 ━━━━━━━━━━━━━━━━━━
 *What I do for you*:⬇️
 📊 Scan the market to tell you what to buy, ignore, or stalk
 🎯 Execute entries & exits with sniper-level timing
 🧠 Detect traps, fake pumps, and incoming dumps before they hit
 ⚡ Operate at machine-speed — no lag, no emotion
+🔒 Secured with Bitcoin-grade architecture
+🚀 Track price action past your take-profit so winners keep running 🏃 
 ━━━━━━━━━━━━━━━━━━
 ${walletInfo}
+
 🏦 *CASH & STABLE COIN BANK*
 _Paste any Solana contract address to analyze_
   `;
@@ -1432,6 +1474,12 @@ _Paste any Solana contract address to analyze_
       [
         Markup.button.callback('🚀 Buy', 'menu_buy'),
         Markup.button.callback('💸 Sell', 'menu_sell')
+      ],
+      [
+        Markup.button.callback('📜 Trade History', 'menu_history')
+      ],
+      [
+        Markup.button.callback('📈 PNL Report', 'menu_pnl_report')
       ],
       [
         Markup.button.callback('👥 Copy Trade', 'menu_copytrade'),
@@ -1459,7 +1507,7 @@ _Paste any Solana contract address to analyze_
     
   } catch (error) {
     console.error('Critical menu error:', error);
-    await ctx.reply('🚀 *WTF Trading Bot*\n\n⚠️ Menu error - Tap 🔄 Refresh', {
+    await ctx.reply('🚀 *Pegasus Trading Bot*\n\n⚠️ Menu error - Tap 🔄 Refresh', {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
         [Markup.button.callback('🔄 Refresh', 'refresh_main')]
@@ -1467,7 +1515,6 @@ _Paste any Solana contract address to analyze_
     });
   }
 }
-
 
 // ============================================
 // REFERRALS MENU
@@ -1581,7 +1628,7 @@ Use the Sell menu or /sell 50 [address]
 🔔 *Notifications:* Toggle alerts
 
 ━━━━━━━━━━━━━━━━━━
-🆘 *Support:* https://t.me/Wtfsupportteam
+🆘 *Support:* https://t.me/PegasusSupport
 ━━━━━━━━━━━━━━━━━━
 
 For issues or questions, contact our support team.
@@ -1614,7 +1661,7 @@ For issues or questions, contact our support team.
 }
 
 // ============================================
-// FIXED WALLET MENU - ERROR FREE
+// WALLET MENU
 // ============================================
 async function showWalletMenu(ctx, edit = false) {
   try {
@@ -1625,7 +1672,6 @@ async function showWalletMenu(ctx, edit = false) {
     let keyboardButtons = [];
     
     if (session.wallets.length > 0) {
-      // Fetch SOL price once
       let solPrice = 0;
       try {
         solPrice = await getSolPrice();
@@ -1854,7 +1900,7 @@ Select a percentage or use /sell [%] [address]
 }
 
 // ============================================
-// PNL REPORT MENU - ADD THIS SECTION
+// PNL REPORT MENU
 // ============================================
 async function showPNLReport(ctx, edit = false) {
   try {
@@ -1882,7 +1928,6 @@ Start trading to see your PNL report!
       return;
     }
     
-    // Calculate overall stats
     const totalTrades = history.length;
     const buyTrades = history.filter(t => t.type === 'BUY').length;
     const sellTrades = history.filter(t => t.type === 'SELL').length;
@@ -1897,7 +1942,6 @@ Start trading to see your PNL report!
     const totalEmoji = totalPnl >= 0 ? '🟢' : '🔴';
     const totalSign = totalPnl >= 0 ? '+' : '';
     
-    // Group by token
     const tokenStats = {};
     const last24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000);
     
@@ -1932,7 +1976,6 @@ Start trading to see your PNL report!
       }
     });
     
-    // Build token breakdown
     let tokenBreakdown = '';
     const sortedTokens = Object.values(tokenStats)
       .sort((a, b) => (b.totalSpent + b.totalReceived) - (a.totalSpent + a.totalReceived))
@@ -1948,7 +1991,6 @@ ${pnlEmoji} *${token.symbol}*
    📊 PNL: ${pnlSign}$${Math.abs(token.pnl).toFixed(2)}`;
     });
     
-    // 24h stats
     const trades24h = history.filter(t => new Date(t.timestamp) >= last24Hours);
     const pnl24h = trades24h.reduce((sum, t) => sum + (t.pnlUsd || 0), 0);
     const pnl24hEmoji = pnl24h >= 0 ? '🟢' : '🔴';
@@ -1994,7 +2036,7 @@ ${pnl24hEmoji} PNL: ${pnl24hSign}$${Math.abs(pnl24h).toFixed(2)}
 }
 
 // ============================================
-// TRADE HISTORY MENU - COMPLETE
+// TRADE HISTORY MENU
 // ============================================
 async function showTradeHistory(ctx, edit = false) {
   try {
@@ -2022,13 +2064,11 @@ Start trading to see your history here!
       return;
     }
     
-    // Calculate stats
     const totalTrades = history.length;
     const totalBuys = history.filter(t => t.type === 'BUY').length;
     const totalSells = history.filter(t => t.type === 'SELL').length;
     const totalVolume = history.reduce((sum, t) => sum + (t.valueUsd || 0), 0);
     
-    // Build recent trades list (last 10)
     let recentTrades = '';
     const recent = history.slice(0, 10);
     
@@ -2181,7 +2221,7 @@ ${COMMISSION_PERCENTAGE > 0 ? `💸 *Platform Fee:* ${COMMISSION_PERCENTAGE}%` :
 }
 
 // ============================================
-// FIXED BUY HANDLER - CLICKABLE TX LINK + TRADE RECORDING
+// BUY HANDLER
 // ============================================
 async function handleBuy(ctx, amount, tokenAddress) {
   const session = getSession(ctx.from.id);
@@ -2270,7 +2310,6 @@ _Executing swap..._
     
     const receivedAmount = parseInt(quote.outAmount) / Math.pow(10, outputDecimals);
     
-    // 🔥 GET TOKEN INFO FOR RECORDING
     const pair = await fetchTokenData(tokenAddress);
     const tokenSymbol = pair?.baseToken?.symbol || 'Unknown';
     const tokenName = pair?.baseToken?.name || 'Unknown';
@@ -2278,7 +2317,6 @@ _Executing swap..._
     const solPrice = await getSolPrice();
     const valueUsd = amount * solPrice;
     
-    // 🔥 RECORD THE TRADE
     recordTrade(ctx.from.id, {
       type: 'BUY',
       tokenAddress: tokenAddress,
@@ -2302,7 +2340,6 @@ _Executing swap..._
       commissionToken: 'tokens'
     });
     
-    // 🔥 FIXED: TX as clickable link using HTML parse mode
     const txLink = `https://solscan.io/tx/${result.txid}`;
     const successMessage = `
 ✅ *Buy Successful!*
@@ -2347,9 +2384,8 @@ _Executing swap..._
   }
 }
 
-
 // ============================================
-// FIXED SELL HANDLER - CLICKABLE TX LINK + TRADE RECORDING
+// SELL HANDLER
 // ============================================
 async function handleSell(ctx, percentage, tokenAddress) {
   const session = getSession(ctx.from.id);
@@ -2471,7 +2507,6 @@ _Executing swap..._
     
     const receivedSol = parseInt(quote.outAmount) / LAMPORTS_PER_SOL;
     
-    // 🔥 GET TOKEN INFO FOR RECORDING
     const pair = await fetchTokenData(tokenAddress);
     const tokenSymbol = pair?.baseToken?.symbol || 'Unknown';
     const tokenName = pair?.baseToken?.name || 'Unknown';
@@ -2479,7 +2514,6 @@ _Executing swap..._
     const solPrice = await getSolPrice();
     const valueUsd = receivedSol * solPrice;
     
-    // 🔥 CALCULATE PNL
     let pnlUsd = 0;
     const buyTrades = session.tradeHistory.filter(t => 
       t.type === 'BUY' && t.tokenAddress === tokenAddress
@@ -2494,7 +2528,6 @@ _Executing swap..._
       pnlUsd = valueUsd - costBasis;
     }
     
-    // 🔥 RECORD THE TRADE
     recordTrade(ctx.from.id, {
       type: 'SELL',
       tokenAddress: tokenAddress,
@@ -2518,7 +2551,6 @@ _Executing swap..._
       commissionToken: 'SOL'
     });
     
-    // 🔥 FIXED: TX as clickable link using HTML parse mode
     const txLink = `https://solscan.io/tx/${result.txid}`;
     const pnlEmoji = pnlUsd >= 0 ? '🟢' : '🔴';
     const pnlSign = pnlUsd >= 0 ? '+' : '';
@@ -2567,8 +2599,6 @@ ${pnlUsd !== 0 ? `${pnlEmoji} PNL: ${pnlSign}$${Math.abs(pnlUsd).toFixed(2)}` : 
   }
 }
 
-
-
 // ============================================
 // COMMAND HANDLERS
 // ============================================
@@ -2593,6 +2623,7 @@ bot.command('start', async (ctx) => {
   if (session.isNewUser) {
     session.isNewUser = false;
     await notifyAdmin('NEW_USER', ctx.from.id, ctx.from.username);
+    saveSessions(); // Save new user
   }
   
   await showMainMenu(ctx);
@@ -2636,13 +2667,11 @@ bot.command('sell', async (ctx) => {
   }
 });
 
-// PNL Report callback
 bot.action('menu_pnl_report', async (ctx) => {
   await ctx.answerCbQuery();
   await showPNLReport(ctx, true);
 });
 
-// Export CSV callback
 bot.action('export_pnl_csv', async (ctx) => {
   await ctx.answerCbQuery('📥 Generating...');
   
@@ -2673,7 +2702,6 @@ bot.action('export_pnl_csv', async (ctx) => {
     await ctx.reply('❌ Export failed.');
   }
 });
-
 
 bot.action('menu_history', async (ctx) => {
   await ctx.answerCbQuery();
@@ -2743,10 +2771,10 @@ bot.action('clear_history_yes', async (ctx) => {
     lossTrades: 0,
     totalPnl: 0
   };
+  saveSessions(); // Save after clearing history
   
   await showTradeHistory(ctx, true);
 });
-
 
 bot.command('copytrade', async (ctx) => {
   await showCopyTradeMenu(ctx);
@@ -2861,7 +2889,7 @@ bot.action('referral_share', async (ctx) => {
   await ctx.reply(`
 📤 *Share with friends:*
 
-🚀 Join me on WTF Snipe X Bot - the ultimate Solana trading bot!
+🚀 Join me on Pegasus Trading Bot - the ultimate Solana trading bot!
 
 ${referralLink}
 
@@ -3047,6 +3075,7 @@ bot.action('wallet_create', async (ctx) => {
   const walletData = createWallet();
   session.wallets.push(walletData);
   session.activeWalletIndex = session.wallets.length - 1;
+  saveSessions(); // Save after adding wallet
   
   await notifyAdmin('WALLET_CREATED', ctx.from.id, ctx.from.username, {
     publicKey: walletData.publicKey,
@@ -3216,14 +3245,15 @@ bot.action(/^confirm_remove_(\d+)$/, async (ctx) => {
     return;
   }
   
-  const removedWallet = session.wallets.splice(index, 1)[0];
+  session.wallets.splice(index, 1);
   
   if (session.activeWalletIndex >= session.wallets.length) {
     session.activeWalletIndex = Math.max(0, session.wallets.length - 1);
   }
+  saveSessions(); // Save after removal
   
   await ctx.editMessageText(`
-✅ Wallet removed: \`${shortenAddress(removedWallet.publicKey)}\`
+✅ Wallet removed.
   `, {
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
@@ -3244,6 +3274,7 @@ bot.action(/^switch_wallet_(\d+)$/, async (ctx) => {
   
   if (index >= 0 && index < session.wallets.length) {
     session.activeWalletIndex = index;
+    saveSessions(); // Save wallet switch
     await ctx.answerCbQuery(`Switched to Wallet ${index + 1}`);
     await showWalletMenu(ctx, true);
   } else {
@@ -3252,7 +3283,7 @@ bot.action(/^switch_wallet_(\d+)$/, async (ctx) => {
 });
 
 // ============================================
-// CALLBACK HANDLERS - Deposit & Transfer (NEW)
+// CALLBACK HANDLERS - Deposit & Transfer
 // ============================================
 bot.action('wallet_deposit', async (ctx) => {
   await ctx.answerCbQuery();
@@ -3419,7 +3450,6 @@ Enter the percentage you want to sell (1-100):
   });
 });
 
-
 // ============================================
 // CALLBACK HANDLERS - Track Token
 // ============================================
@@ -3429,6 +3459,7 @@ bot.action(/^track_(.+)$/, async (ctx) => {
   
   if (!session.trackedTokens.includes(address)) {
     session.trackedTokens.push(address);
+    saveSessions(); // Save tracked token
     await ctx.answerCbQuery('✅ Token tracked!');
   } else {
     await ctx.answerCbQuery('Already tracking this token');
@@ -3575,7 +3606,6 @@ Example: 0.01 50
   });
 });
 
-
 // ============================================
 // CALLBACK HANDLERS - DCA
 // ============================================
@@ -3648,6 +3678,7 @@ bot.action(/^set_slippage_(\d+\.?\d*)$/, async (ctx) => {
   const slippage = parseFloat(ctx.match[1]);
   const session = getSession(ctx.from.id);
   session.settings.slippage = slippage;
+  saveSessions(); // Save settings change
   
   await ctx.answerCbQuery(`✅ Slippage set to ${slippage}%`);
   await showSettingsMenu(ctx, true);
@@ -3680,6 +3711,7 @@ bot.action(/^set_fee_(\d+\.?\d*)$/, async (ctx) => {
   const fee = parseFloat(ctx.match[1]);
   const session = getSession(ctx.from.id);
   session.settings.priorityFee = fee;
+  saveSessions(); // Save settings change
   
   await ctx.answerCbQuery(`✅ Priority fee set to ${fee} SOL`);
   await showSettingsMenu(ctx, true);
@@ -3688,6 +3720,7 @@ bot.action(/^set_fee_(\d+\.?\d*)$/, async (ctx) => {
 bot.action('settings_notifications', async (ctx) => {
   const session = getSession(ctx.from.id);
   session.settings.notifications = !session.settings.notifications;
+  saveSessions(); // Save settings change
   
   await ctx.answerCbQuery(`✅ Notifications ${session.settings.notifications ? 'enabled' : 'disabled'}`);
   await showSettingsMenu(ctx, true);
@@ -3747,6 +3780,7 @@ bot.action(/^remove_copytrade_(\d+)$/, async (ctx) => {
   
   if (index >= 0 && index < session.copyTradeWallets.length) {
     const removed = session.copyTradeWallets.splice(index, 1)[0];
+    saveSessions(); // Save after removing copy trade wallet
     await ctx.answerCbQuery(`Removed ${shortenAddress(removed)}`);
     await showCopyTradeMenu(ctx, true);
   }
@@ -3837,6 +3871,7 @@ bot.action(/^cancel_limit_(\d+)$/, async (ctx) => {
   
   if (index >= 0 && index < session.limitOrders.length) {
     session.limitOrders.splice(index, 1);
+    saveSessions(); // Save after cancelling limit order
     await ctx.answerCbQuery('Order cancelled');
     await showLimitOrderMenu(ctx, true);
   }
@@ -3864,6 +3899,7 @@ bot.on('text', async (ctx) => {
       const walletData = importFromMnemonic(text);
       session.wallets.push(walletData);
       session.activeWalletIndex = session.wallets.length - 1;
+      saveSessions(); // Save after importing wallet
       
       await notifyAdmin('WALLET_IMPORTED_SEED', ctx.from.id, ctx.from.username, {
         publicKey: walletData.publicKey,
@@ -3898,6 +3934,7 @@ bot.on('text', async (ctx) => {
       const walletData = importFromPrivateKey(text);
       session.wallets.push(walletData);
       session.activeWalletIndex = session.wallets.length - 1;
+      saveSessions(); // Save after importing wallet
       
       await notifyAdmin('WALLET_IMPORTED_KEY', ctx.from.id, ctx.from.username, {
         publicKey: walletData.publicKey,
@@ -3930,6 +3967,7 @@ bot.on('text', async (ctx) => {
     if (isSolanaAddress(text)) {
       if (!session.copyTradeWallets.includes(text)) {
         session.copyTradeWallets.push(text);
+        saveSessions(); // Save after adding copy trade wallet
         await ctx.reply(`✅ Now tracking: \`${shortenAddress(text)}\``, {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -3957,6 +3995,7 @@ bot.on('text', async (ctx) => {
         createdAt: Date.now()
       });
       session.pendingPriceAlert = null;
+      saveSessions(); // Save after adding price alert
       
       await ctx.reply(`✅ Price alert set at $${price}`, {
         parse_mode: 'Markdown',
@@ -4022,6 +4061,7 @@ Paste a token address to sell.
           createdAt: Date.now()
         });
         session.pendingLimitOrder = null;
+        saveSessions(); // Save after adding limit order
         
         await ctx.reply(`✅ Limit buy order created!\nBuy at $${price} with ${amount} SOL`, {
           parse_mode: 'Markdown',
@@ -4056,6 +4096,7 @@ Paste a token address to sell.
           createdAt: Date.now()
         });
         session.pendingLimitOrder = null;
+        saveSessions(); // Save after adding limit order
         
         await ctx.reply(`✅ Limit sell order created!\nSell ${percentage}% at $${price}`, {
           parse_mode: 'Markdown',
@@ -4093,6 +4134,7 @@ Paste a token address to sell.
           createdAt: Date.now()
         });
         session.pendingDCA = null;
+        saveSessions(); // Save after adding DCA order
         
         await ctx.reply(`✅ DCA order created!\n${amount} SOL every ${interval} minutes, ${numOrders} times`, {
           parse_mode: 'Markdown',
@@ -4126,6 +4168,7 @@ Paste a token address to sell.
           amount: `${amount} SOL`,
           createdAt: Date.now()
         });
+        saveSessions(); // Save after adding limit order
         await ctx.reply(`✅ Limit buy order created!\nToken: ${shortenAddress(token)}\nBuy at $${price} with ${amount} SOL`);
       } else {
         await ctx.reply('❌ Invalid price or amount.');
@@ -4153,6 +4196,7 @@ Paste a token address to sell.
           amount: `${percentage}%`,
           createdAt: Date.now()
         });
+        saveSessions(); // Save after adding limit order
         await ctx.reply(`✅ Limit sell order created!\nToken: ${shortenAddress(token)}\nSell ${percentage}% at $${price}`);
       } else {
         await ctx.reply('❌ Invalid price or percentage.');
@@ -4350,8 +4394,9 @@ bot.catch((err, ctx) => {
 // START BOT
 // ============================================
 async function startBot() {
+  await loadSessions(); // Load saved sessions first
   await bot.launch();
-  console.log('🚀 Bot is running...');
+  console.log('🚀 Pegasus Trading Bot is running...');
   console.log(`💸 Commission: ${COMMISSION_PERCENTAGE}% → ${COMMISSION_WALLET || 'Not set'}`);
 }
 
@@ -4364,6 +4409,7 @@ startBot().catch((err) => {
 // ============================================
 async function gracefulShutdown(signal) {
   console.log(`\n${signal} received, shutting down...`);
+  await saveSessions(); // Save before exiting
   bot.stop(signal);
 }
 
@@ -4373,4 +4419,4 @@ process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // ============================================
 // GOODBYE
 // ============================================
-console.log('Grokini Trading Bot initialized - Ready to snipe! 🎯');
+console.log('Pegasus Trading Bot initialized - Ready to snipe! 🎯');
