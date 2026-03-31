@@ -52,8 +52,8 @@ const FONT_MID_SIZE   = 42;
 const FONT_SMALL_SIZE = 28;
 
 // Background images (place these PNGs in the bot's root directory)
-const GOOD_BG = path.join(__dirname, 'good_bg.png');
-const BAD_BG  = path.join(__dirname, 'bad_bg.png');
+const GOOD_BG = path.join(__dirname, 'good.png');
+const BAD_BG  = path.join(__dirname, 'bad.png');
 const SOLANA_LOGO = path.join(__dirname, 'solana-logo.png');
 
 // ======================= FILE PERSISTENCE =======================
