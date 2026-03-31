@@ -3,6 +3,9 @@
 // Jupiter V6 + Multi-Wallet + File Persistence
 // + Tracked Tokens + Alerts + PNL Images + Full Menus
 // ============================================
+// PEGASUS TRADING BOT - Complete Implementation
+// with Debug Logging
+// ============================================
 import { Telegraf, Markup } from 'telegraf';
 import {
   Connection,
@@ -140,6 +143,13 @@ const COMMISSION_BPS = Math.floor(COMMISSION_PERCENTAGE * 100);
 
 const bot = new Telegraf(BOT_TOKEN);
 const connection = new Connection(SOLANA_RPC, 'confirmed');
+
+// ======================= DEBUG LOGGING =======================
+bot.use(async (ctx, next) => {
+  console.log('Update:', ctx.updateType);
+  if (ctx.message) console.log('Message:', ctx.message.text);
+  await next();
+});
 
 // ======================= SESSION MANAGEMENT =======================
 const userSessions = new Map();
@@ -1255,7 +1265,9 @@ bot.command('help', async (ctx) => { await showHelpMenu(ctx); });
 
 // ======================= TESTPNL (ADMIN ONLY) =======================
 bot.command('testpnl', async (ctx) => {
+  console.log('Testpnl command received from', ctx.from.id);
   if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) {
+    console.log('User not admin:', ctx.from.id);
     return ctx.reply('❌ This command is for admins only.');
   }
   const session = getSession(ctx.from.id);
@@ -1273,6 +1285,12 @@ bot.command('testpnl', async (ctx) => {
     username: ctx.from.username || ctx.from.first_name || 'admin'
   });
   await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +100%" });
+});
+
+// Fallback for unknown commands
+bot.command('*', async (ctx) => {
+  console.log('Unknown command:', ctx.message.text);
+  await ctx.reply('Unknown command. Try /start');
 });
 
 // ======================= MESSAGE HANDLER =======================
@@ -1558,4 +1576,5 @@ async function startBot() {
 }
 startBot().catch(console.error);
 process.once('SIGINT', async () => { await saveSessions(); bot.stop('SIGINT'); });
+process.once('SIGTERM', async () => { await saveSessions(); bot.stop('SIGTERM'); });process.once('SIGINT', async () => { await saveSessions(); bot.stop('SIGINT'); });
 process.once('SIGTERM', async () => { await saveSessions(); bot.stop('SIGTERM'); });
