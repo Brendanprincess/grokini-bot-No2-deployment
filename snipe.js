@@ -27,7 +27,7 @@ import { derivePath } from 'ed25519-hd-key';
 import 'dotenv/config';
 import fs from 'fs/promises';
 import path from 'path';
-import { createCanvas, loadImage } from 'canvas';
+import { createCanvas, loadImage, registerFont } from 'canvas';
 import QRCode from 'qrcode';
 import { fileURLToPath } from 'url';
 
@@ -936,6 +936,7 @@ async function showBuyMenu(ctx, edit = false) {
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🚀 0.1 SOL', 'setbuy_0.1'), Markup.button.callback('🚀 0.2 SOL', 'setbuy_0.2')],
     [Markup.button.callback('🚀 0.5 SOL', 'setbuy_0.5'), Markup.button.callback('🚀 1 SOL', 'setbuy_1')],
+    [Markup.button.callback('🎛️ Custom', 'setbuy_custom')],
     [Markup.button.callback('« Back', 'back_main')]
   ]);
   if (edit) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
@@ -1141,6 +1142,7 @@ bot.action('transfer_token', async (ctx) => { const session = getSession(ctx.fro
 bot.action(/^buy_(\d+\.?\d*)_(.+)$/, async (ctx) => { const amount = parseFloat(ctx.match[1]); const token = ctx.match[2]; await ctx.answerCbQuery(); await handleBuy(ctx, amount, token); });
 bot.action(/^sell_(\d+)_(.+)$/, async (ctx) => { const percent = parseInt(ctx.match[1]); const token = ctx.match[2]; await ctx.answerCbQuery(); await handleSell(ctx, percent, token); });
 bot.action(/^setbuy_(\d+\.?\d*)$/, async (ctx) => { const amount = parseFloat(ctx.match[1]); const session = getSession(ctx.from.id); session.pendingTrade = { type: 'buy', amount }; await ctx.editMessageText(`Buy ${amount} SOL – paste token address:`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) }); });
+bot.action('setbuy_custom', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_CUSTOM_BUY_AMOUNT'; await ctx.editMessageText('Enter amount of SOL to buy:', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) }); });
 bot.action(/^setsell_(\d+)$/, async (ctx) => { const percent = parseInt(ctx.match[1]); const session = getSession(ctx.from.id); session.pendingTrade = { type: 'sell', percentage: percent }; await ctx.editMessageText(`Sell ${percent}% – paste token address:`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_sell')]]) }); });
 bot.action('setsell_custom', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_CUSTOM_SELL_PERCENT'; await ctx.editMessageText('Enter percentage (1-100):', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_sell')]]) }); });
 bot.action(/^refresh_(.+)$/, async (ctx) => { const target = ctx.match[1]; if (target === 'main') { await ctx.answerCbQuery(); await showMainMenu(ctx, true); } else if (target === 'positions') { await ctx.answerCbQuery(); await showPositionsMenu(ctx, true); } else { await ctx.answerCbQuery(); await sendTokenAnalysis(ctx, target); } });
@@ -1260,7 +1262,6 @@ bot.command('testpnl', async (ctx) => {
   const referralCode = getReferralCode(ctx.from.id);
   const botUser = (await bot.telegram.getMe()).username;
   const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
-  // Sample data – matches real image layout
   const img = await generatePnLImage({
     pnlPercent: 100,
     pair: "MONDAY/SOL",
@@ -1271,7 +1272,7 @@ bot.command('testpnl', async (ctx) => {
     qrData: qr,
     username: ctx.from.username || ctx.from.first_name || 'admin'
   });
-  await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +42.5%" });
+  await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +100%" });
 });
 
 // ======================= MESSAGE HANDLER =======================
@@ -1331,6 +1332,15 @@ bot.on('text', async (ctx) => {
     }
     await ctx.reply('❌ Invalid threshold');
     session.state = null;
+    return;
+  }
+  if (session.state === 'AWAITING_CUSTOM_BUY_AMOUNT') {
+    session.state = null;
+    const amount = parseFloat(text);
+    if (!isNaN(amount) && amount > 0) {
+      session.pendingTrade = { type: 'buy', amount };
+      await ctx.reply(`Buy ${amount} SOL – paste token address:`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) });
+    } else await ctx.reply('❌ Invalid amount');
     return;
   }
   if (session.state === 'AWAITING_CUSTOM_SELL_AMOUNT') {
@@ -1524,8 +1534,8 @@ async function sendTokenAnalysis(ctx, address) {
       [Markup.button.callback('🔄 Refresh', `refresh_${address}`), Markup.button.callback('📍 Track', `track_${address}`)],
       [Markup.button.callback('~ ~ ~ 🅱️🆄🆈 ~ ~ ~', 'noop')],
       [Markup.button.callback('🚀 Buy 0.1 SOL', `buy_0.1_${address}`), Markup.button.callback('🚀 Buy 0.2 SOL', `buy_0.2_${address}`)],
-      [Markup.button.callback('🚀 Buy 0.5 SOL', `buy_0.5_${address}`)],
-      [Markup.button.callback('~ ~ ~ 🆂🅴🅻🅻 ~ ~ ~', 'noop')],
+      [Markup.button.callback('🚀 Buy 0.5 SOL', `buy_0.5_${address}`), Markup.button.callback('🚀 Buy 1 SOL', `buy_1_${address}`)],
+      [Markup.button.callback('🎛️ Custom Buy', `setbuy_custom`), Markup.button.callback('~ ~ ~ 🆂🅴🅻🅻 ~ ~ ~', 'noop')],
       [Markup.button.callback('💸 Sell 25%', `sell_25_${address}`), Markup.button.callback('💸 Sell 50%', `sell_50_${address}`)],
       [Markup.button.callback('💸 Sell 100%', `sell_100_${address}`), Markup.button.callback('💸 Custom %', `sell_custom_${address}`)],
       [Markup.button.callback('💸 Custom Amt', `sell_custom_input_${address}`), Markup.button.callback('🔔 Price Alert', `price_alert_${address}`)],
