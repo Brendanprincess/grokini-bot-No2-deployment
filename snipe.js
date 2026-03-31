@@ -1265,26 +1265,31 @@ bot.command('help', async (ctx) => { await showHelpMenu(ctx); });
 
 // ======================= TESTPNL (ADMIN ONLY) =======================
 bot.command('testpnl', async (ctx) => {
-  console.log('Testpnl command received from', ctx.from.id);
+  console.log('✅ testpnl command triggered by', ctx.from.id);
   if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) {
     console.log('User not admin:', ctx.from.id);
     return ctx.reply('❌ This command is for admins only.');
   }
-  const session = getSession(ctx.from.id);
-  const referralCode = getReferralCode(ctx.from.id);
-  const botUser = (await bot.telegram.getMe()).username;
-  const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
-  const img = await generatePnLImage({
-    pnlPercent: 100,
-    pair: "MONDAY/SOL",
-    time: "92h",
-    invested: "1.2 SOL ($99.29)",
-    current: "120 SOL ($9.9K)",
-    tagline: "PEGASUS • MONDAY POSITION",
-    qrData: qr,
-    username: ctx.from.username || ctx.from.first_name || 'admin'
-  });
-  await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +100%" });
+  try {
+    const session = getSession(ctx.from.id);
+    const referralCode = getReferralCode(ctx.from.id);
+    const botUser = (await bot.telegram.getMe()).username;
+    const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+    const img = await generatePnLImage({
+      pnlPercent: 100,
+      pair: "MONDAY/SOL",
+      time: "92h",
+      invested: "1.2 SOL ($99.29)",
+      current: "120 SOL ($9.9K)",
+      tagline: "PEGASUS • MONDAY POSITION",
+      qrData: qr,
+      username: ctx.from.username || ctx.from.first_name || 'admin'
+    });
+    await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +100%" });
+  } catch (err) {
+    console.error('testpnl error:', err);
+    await ctx.reply(`❌ Failed: ${err.message}`);
+  }
 });
 
 // Fallback for unknown commands
