@@ -212,6 +212,7 @@ async function saveSessions() {
   } catch (err) {
     console.error('Save sessions error:', err);
   }
+}
 
 function getSession(userId) {
   if (!userSessions.has(userId)) {
