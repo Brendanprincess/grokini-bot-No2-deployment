@@ -172,8 +172,20 @@ function deserializeSession(data) {
   return session;
 }
 
+// Helper to ensure the directory exists
+async function ensureDirectoryExists(filePath) {
+  const dir = path.dirname(filePath);
+  try {
+    await fs.access(dir);
+  } catch {
+    // Directory does not exist, create it recursively
+    await fs.mkdir(dir, { recursive: true });
+  }
+}
+
 async function loadSessions() {
   try {
+    await ensureDirectoryExists(SESSIONS_FILE);
     const data = await fs.readFile(SESSIONS_FILE, 'utf-8');
     const obj = JSON.parse(data);
     for (const [uid, sd] of Object.entries(obj)) {
@@ -192,12 +204,14 @@ async function loadSessions() {
 
 async function saveSessions() {
   try {
+    await ensureDirectoryExists(SESSIONS_FILE);
     const obj = {};
     for (const [uid, sess] of userSessions.entries()) obj[uid] = serializeSession(sess);
     await fs.writeFile(SESSIONS_FILE, JSON.stringify(obj, null, 2), 'utf-8');
     console.log(`✅ Saved ${userSessions.size} sessions`);
-  } catch (err) { console.error('Save sessions error:', err); }
-}
+  } catch (err) {
+    console.error('Save sessions error:', err);
+  }
 
 function getSession(userId) {
   if (!userSessions.has(userId)) {
