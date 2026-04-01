@@ -579,7 +579,7 @@ async function generatePnLImage(data) {
   // draw logos (optional)
   try {
     const logo = await loadImage(solanaLogoPath);
-    const logoSize = 28;
+    const logoSize = 26;
     const logoMargin = 6;
     ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 295, logoSize, logoSize);
     ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 395, logoSize, logoSize);
