@@ -491,8 +491,10 @@ async function generatePnLImage(data) {
   } catch {
     bgImage = null;
   }
+
   const canvas = createCanvas(bgImage ? bgImage.width : 1200, bgImage ? bgImage.height : 800);
   const ctx = canvas.getContext('2d');
+
   if (bgImage) {
     ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
   } else {
@@ -518,15 +520,13 @@ async function generatePnLImage(data) {
     ctx.fillText(text, x, y);
   }
 
-  // Draw stylish "PEGASUS" at top center with glow effect
+  // Draw "PEGASUS" at top center
   const pegasusText = 'PEGASUS';
   const pegasusFontSize = FONT_MID_SIZE;
   ctx.font = `${pegasusFontSize}px "OrbitronExtraBold"`;
   ctx.textAlign = 'center';
-  const textMetrics = ctx.measureText(pegasusText);
   const pegasusX = canvas.width / 2;
   const pegasusY = 60;
-  // Draw glow
   for (let off = 1; off <= 5; off++) {
     ctx.fillStyle = `rgb(${glowColor.r}, ${glowColor.g}, ${glowColor.b})`;
     ctx.fillText(pegasusText, pegasusX - off, pegasusY);
@@ -539,29 +539,38 @@ async function generatePnLImage(data) {
   ctx.textAlign = 'left';
 
   const x = Math.floor(canvas.width * 0.55);
-  const yStart = 120; // moved down it to accommodate top text
+  const yStart = 120;
 
+  // Token name
   ctx.font = `${FONT_MID_SIZE}px "OrbitronSemiBold"`;
   ctx.fillStyle = 'rgb(200,200,200)';
   ctx.fillText(pair, x, yStart);
+
+  // PnL percent with glow
   drawGlowText(x, yStart + 70, pnlText, 'OrbitronExtraBold', FONT_BIG_SIZE, glowColor);
+
+  // Time
   ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
   ctx.fillStyle = 'rgb(150,150,150)';
   ctx.fillText(`Time: ${time}`, x, yStart + 190);
+
+  // Invested section
   ctx.fillStyle = 'rgb(120,120,120)';
   ctx.fillText('Invested', x, yStart + 260);
   ctx.fillStyle = 'white';
   ctx.fillText(invested, x, yStart + 300);
+
+  // Current Value section
   ctx.fillStyle = 'rgb(120,120,120)';
   ctx.fillText('Current Value', x, yStart + 360);
   ctx.fillStyle = 'white';
   ctx.fillText(current, x, yStart + 400);
 
-  // ---- QR Code on the RIGHT side ----
+  // QR code (right side)
   if (qrData) {
     const qrSize = 150;
-    const qrX = canvas.width - qrSize - 30;   // 30px from right edge
-    const qrY = canvas.height - qrSize - 30;  // 30px from bottom
+    const qrX = canvas.width - qrSize - 30;
+    const qrY = canvas.height - qrSize - 30;
     try {
       const qrBuf = await QRCode.toBuffer(qrData, { width: qrSize, margin: 1 });
       const qrImg = await loadImage(qrBuf);
@@ -576,27 +585,27 @@ async function generatePnLImage(data) {
     }
   }
 
-  // draw logos (optional)
+  // Solana logos (new size & position)
   try {
-  const logo = await loadImage(solanaLogoPath);
-  const logoSize = 26;                // smaller, matches text scale
-  const logoMargin = 6;               // gap between logo and text
-  const logoYOffset = 5;              // lowers logo to center with text
+    const logo = await loadImage(solanaLogoPath);
+    const logoSize = 26;                // smaller, matches text scale
+    const logoMargin = 6;               // gap between logo and text
+    const logoYOffset = 5;              // lowers logo to center with text
 
-  // First logo (Invested section)
-  ctx.drawImage(logo,
-    x - logoSize - logoMargin,
-    yStart + 295 + logoYOffset,
-    logoSize, logoSize
-  );
+    // First logo (Invested section)
+    ctx.drawImage(logo,
+      x - logoSize - logoMargin,
+      yStart + 295 + logoYOffset,
+      logoSize, logoSize
+    );
+    // Second logo (Current Value section)
+    ctx.drawImage(logo,
+      x - logoSize - logoMargin,
+      yStart + 395 + logoYOffset,
+      logoSize, logoSize
+    );
+  } catch { /* no logo */ }
 
-  // Second logo (Current Value section)
-  ctx.drawImage(logo,
-    x - logoSize - logoMargin,
-    yStart + 395 + logoYOffset,
-    logoSize, logoSize
-  );
-} catch { /* no logo */ }
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
 
