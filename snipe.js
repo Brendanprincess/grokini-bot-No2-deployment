@@ -539,7 +539,7 @@ async function generatePnLImage(data) {
   ctx.textAlign = 'left';
 
   const x = Math.floor(canvas.width * 0.55);
-  const yStart = 120; // moved down to accommodate top text
+  const yStart = 120; // moved down it to accommodate top text
 
   ctx.font = `${FONT_MID_SIZE}px "OrbitronSemiBold"`;
   ctx.fillStyle = 'rgb(200,200,200)';
@@ -579,9 +579,10 @@ async function generatePnLImage(data) {
   // draw logos (optional)
   try {
     const logo = await loadImage(solanaLogoPath);
-    const logoSize = 35;
-    ctx.drawImage(logo, x - logoSize - 10, yStart + 295, logoSize, logoSize);
-    ctx.drawImage(logo, x - logoSize - 10, yStart + 395, logoSize, logoSize);
+    const logoSize = 28;
+    const logoMargin = 6;
+    ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 295, logoSize, logoSize);
+    ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 395, logoSize, logoSize);
   } catch { /* no logo */ }
 
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
