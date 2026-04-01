@@ -606,7 +606,7 @@ async function generatePnLImage(data) {
     const logoMargin = 6;
 
     // Optional micro tweak if needed (usually 0 or 1)
-    const microAdjust = 2;
+    const microAdjust = 2.5;
 
     ctx.drawImage(
       logo,
