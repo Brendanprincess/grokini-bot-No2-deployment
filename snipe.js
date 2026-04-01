@@ -578,19 +578,25 @@ async function generatePnLImage(data) {
 
   // draw logos (optional)
   try {
-const logoSize = 26;
-const logoMargin = 6;  // gap between logo and text
-const logoYOffset = 5; // extra pixels to lower the logo
+  const logo = await loadImage(solanaLogoPath);
+  const logoSize = 26;                // smaller, matches text scale
+  const logoMargin = 6;               // gap between logo and text
+  const logoYOffset = 5;              // lowers logo to center with text
 
-ctx.drawImage(logo, 
-  x - logoSize - logoMargin, 
-  yStart + 295 + logoYOffset, 
-  logoSize, logoSize);
-ctx.drawImage(logo, 
-  x - logoSize - logoMargin, 
-  yStart + 395 + logoYOffset, 
-  logoSize, logoSize);
+  // First logo (Invested section)
+  ctx.drawImage(logo,
+    x - logoSize - logoMargin,
+    yStart + 295 + logoYOffset,
+    logoSize, logoSize
+  );
 
+  // Second logo (Current Value section)
+  ctx.drawImage(logo,
+    x - logoSize - logoMargin,
+    yStart + 395 + logoYOffset,
+    logoSize, logoSize
+  );
+} catch { /* no logo */ }
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
 
