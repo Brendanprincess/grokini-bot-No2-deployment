@@ -479,7 +479,17 @@ function recordTrade(userId, tradeData) {
 
 // ======================= PNL IMAGE =======================
 async function generatePnLImage(data) {
-  const { pnlPercent, pair, time, invested, current, qrData, username, solanaLogoPath = SOLANA_LOGO } = data;
+  const {
+    pnlPercent,
+    pair,
+    time,
+    invested,
+    current,
+    qrData,
+    username,
+    solanaLogoPath = SOLANA_LOGO
+  } = data;
+
   const isProfit = pnlPercent >= 0;
   const bgPath = isProfit ? GOOD_BG : BAD_BG;
   const glowColor = isProfit ? { r: 0, g: 255, b: 150 } : { r: 255, g: 60, b: 60 };
@@ -495,6 +505,7 @@ async function generatePnLImage(data) {
   const canvas = createCanvas(bgImage ? bgImage.width : 1200, bgImage ? bgImage.height : 800);
   const ctx = canvas.getContext('2d');
 
+  // Background
   if (bgImage) {
     ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
   } else {
@@ -505,10 +516,12 @@ async function generatePnLImage(data) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
+  // Glow text helper
   function drawGlowText(x, y, text, fontFamily, fontSize, color) {
     ctx.font = `${fontSize}px "${fontFamily}"`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
+
     for (let off = 1; off <= 5; off++) {
       ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
       ctx.fillText(text, x - off, y);
@@ -516,17 +529,19 @@ async function generatePnLImage(data) {
       ctx.fillText(text, x, y - off);
       ctx.fillText(text, x, y + off);
     }
+
     ctx.fillStyle = 'white';
     ctx.fillText(text, x, y);
   }
 
-  // Draw "PEGASUS" at top center
+  // Title
   const pegasusText = 'PEGASUS';
-  const pegasusFontSize = FONT_MID_SIZE;
-  ctx.font = `${pegasusFontSize}px "OrbitronExtraBold"`;
+  ctx.font = `${FONT_MID_SIZE}px "OrbitronExtraBold"`;
   ctx.textAlign = 'center';
+
   const pegasusX = canvas.width / 2;
   const pegasusY = 60;
+
   for (let off = 1; off <= 5; off++) {
     ctx.fillStyle = `rgb(${glowColor.r}, ${glowColor.g}, ${glowColor.b})`;
     ctx.fillText(pegasusText, pegasusX - off, pegasusY);
@@ -534,6 +549,7 @@ async function generatePnLImage(data) {
     ctx.fillText(pegasusText, pegasusX, pegasusY - off);
     ctx.fillText(pegasusText, pegasusX, pegasusY + off);
   }
+
   ctx.fillStyle = 'white';
   ctx.fillText(pegasusText, pegasusX, pegasusY);
   ctx.textAlign = 'left';
@@ -544,9 +560,10 @@ async function generatePnLImage(data) {
   // Token name
   ctx.font = `${FONT_MID_SIZE}px "OrbitronSemiBold"`;
   ctx.fillStyle = 'rgb(200,200,200)';
+  ctx.textBaseline = 'top';
   ctx.fillText(pair, x, yStart);
 
-  // PnL percent with glow
+  // PnL %
   drawGlowText(x, yStart + 70, pnlText, 'OrbitronExtraBold', FONT_BIG_SIZE, glowColor);
 
   // Time
@@ -554,57 +571,87 @@ async function generatePnLImage(data) {
   ctx.fillStyle = 'rgb(150,150,150)';
   ctx.fillText(`Time: ${time}`, x, yStart + 190);
 
-  // Invested section
+  // Labels
   ctx.fillStyle = 'rgb(120,120,120)';
   ctx.fillText('Invested', x, yStart + 260);
-  ctx.fillStyle = 'white';
-  ctx.fillText(invested, x, yStart + 300);
-
-  // Current Value section
-  ctx.fillStyle = 'rgb(120,120,120)';
   ctx.fillText('Current Value', x, yStart + 360);
-  ctx.fillStyle = 'white';
-  ctx.fillText(current, x, yStart + 400);
 
-  // QR code (right side)
+  // === VALUES + PERFECT ALIGNMENT ===
+  ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
+  ctx.fillStyle = 'white';
+  ctx.textBaseline = 'top';
+
+  const investedY = yStart + 300;
+  const currentY = yStart + 400;
+
+  ctx.fillText(invested, x, investedY);
+  ctx.fillText(current, x, currentY);
+
+  // Measure text (CRUCIAL)
+  const investedMetrics = ctx.measureText(invested);
+  const currentMetrics = ctx.measureText(current);
+
+  const investedHeight =
+    investedMetrics.actualBoundingBoxAscent +
+    investedMetrics.actualBoundingBoxDescent;
+
+  const currentHeight =
+    currentMetrics.actualBoundingBoxAscent +
+    currentMetrics.actualBoundingBoxDescent;
+
+  // === SOLANA LOGO (TRUE CENTERED) ===
+  try {
+    const logo = await loadImage(solanaLogoPath);
+    const logoSize = 26;
+    const logoMargin = 6;
+
+    // Optional micro tweak if needed (usually 0 or 1)
+    const microAdjust = 1;
+
+    ctx.drawImage(
+      logo,
+      x - logoSize - logoMargin,
+      investedY + (investedHeight / 2) - (logoSize / 2) + microAdjust,
+      logoSize,
+      logoSize
+    );
+
+    ctx.drawImage(
+      logo,
+      x - logoSize - logoMargin,
+      currentY + (currentHeight / 2) - (logoSize / 2) + microAdjust,
+      logoSize,
+      logoSize
+    );
+
+  } catch (e) {
+    console.warn('Logo load error:', e);
+  }
+
+  // QR Code
   if (qrData) {
     const qrSize = 150;
     const qrX = canvas.width - qrSize - 30;
     const qrY = canvas.height - qrSize - 30;
+
     try {
       const qrBuf = await QRCode.toBuffer(qrData, { width: qrSize, margin: 1 });
       const qrImg = await loadImage(qrBuf);
+
       ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
+
       ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
       ctx.fillStyle = 'white';
       ctx.textAlign = 'right';
-      ctx.fillText(`@${username}`, qrX - 15, qrY + qrSize / 2 + 8);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`@${username}`, qrX - 15, qrY + qrSize / 2);
+
       ctx.textAlign = 'left';
+
     } catch (e) {
-      console.warn('QR error', e);
+      console.warn('QR error:', e);
     }
   }
-
-  // Solana logos (new size & position)
-  try {
-    const logo = await loadImage(solanaLogoPath);
-    const logoSize = 26;                // smaller, matches text scale
-    const logoMargin = 6;               // gap between logo and text
-    const logoYOffset = 5;              // lowers logo to center with text
-
-    // First logo (Invested section)
-    ctx.drawImage(logo,
-      x - logoSize - logoMargin,
-      yStart + 295 + logoYOffset,
-      logoSize, logoSize
-    );
-    // Second logo (Current Value section)
-    ctx.drawImage(logo,
-      x - logoSize - logoMargin,
-      yStart + 395 + logoYOffset,
-      logoSize, logoSize
-    );
-  } catch { /* no logo */ }
 
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
