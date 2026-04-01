@@ -578,12 +578,18 @@ async function generatePnLImage(data) {
 
   // draw logos (optional)
   try {
-    const logo = await loadImage(solanaLogoPath);
-    const logoSize = 26;
-    const logoMargin = 6;
-    ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 295, logoSize, logoSize);
-    ctx.drawImage(logo, x - logoSize - logoMargin, yStart + 395, logoSize, logoSize);
-  } catch { /* no logo */ }
+const logoSize = 26;
+const logoMargin = 6;  // gap between logo and text
+const logoYOffset = 5; // extra pixels to lower the logo
+
+ctx.drawImage(logo, 
+  x - logoSize - logoMargin, 
+  yStart + 295 + logoYOffset, 
+  logoSize, logoSize);
+ctx.drawImage(logo, 
+  x - logoSize - logoMargin, 
+  yStart + 395 + logoYOffset, 
+  logoSize, logoSize);
 
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
