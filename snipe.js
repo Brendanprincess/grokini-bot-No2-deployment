@@ -1768,73 +1768,143 @@ bot.action(/^dca_(.+)$/, async (ctx) => { const token = ctx.match[1]; const sess
 // ======================= BACKGROUND MONITORING =======================
 const ALERT_CHECK_INTERVAL = 60000;
 async function checkAlerts() {
+  console.log('🔄 Checking alerts...');
   const allTokens = new Set();
-  for (const sess of userSessions.values()) for (const a of (sess.alerts||[])) allTokens.add(a.token);
-  if (!allTokens.size) return;
+  for (const sess of userSessions.values()) {
+    for (const a of (sess.alerts || [])) {
+      allTokens.add(a.token);
+    }
+  }
+  if (!allTokens.size) {
+    console.log('No alerts to check.');
+    return;
+  }
+  console.log(`Found ${allTokens.size} tokens with alerts`);
+
   const dataMap = new Map();
   for (const addr of allTokens) {
+    console.log(`Fetching data for ${addr}...`);
     const pair = await fetchTokenData(addr);
-    if (pair) dataMap.set(addr, { price: parseFloat(pair.priceUsd)||0, mcap: pair.marketCap||pair.fdv||0, change24: pair.priceChange?.h24||0 });
-    await new Promise(r => setTimeout(r, 500));
+    if (pair) {
+      const price = parseFloat(pair.priceUsd) || 0;
+      const mcap = pair.marketCap || pair.fdv || 0;
+      const change24 = pair.priceChange?.h24 || 0;
+      dataMap.set(addr, { price, mcap, change24 });
+      console.log(`✅ ${addr}: price=${price}, mcap=${mcap}, change24=${change24}`);
+    } else {
+      console.log(`❌ No data for ${addr}`);
+    }
+    await new Promise(r => setTimeout(r, 500)); // rate limit
   }
+
   for (const [uid, sess] of userSessions.entries()) {
-    for (const a of (sess.alerts||[])) {
+    for (const a of (sess.alerts || [])) {
       const cur = dataMap.get(a.token);
-      if (!cur) continue;
+      if (!cur) {
+        console.log(`Skipping alert for ${a.token} – no data`);
+        continue;
+      }
+
       let trigger = false, curVal = 0;
-      if (a.type === 'price') { curVal = cur.price; trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= a.threshold); }
-      else if (a.type === 'percent') { curVal = cur.change24; trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= -a.threshold); }
-      else if (a.type === 'mcap') { curVal = cur.mcap; trigger = curVal >= a.threshold; }
+      if (a.type === 'price') {
+        curVal = cur.price;
+        trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= a.threshold);
+        console.log(`Price alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, dir=${a.direction}, trigger=${trigger}`);
+      } else if (a.type === 'percent') {
+        curVal = cur.change24;
+        trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= -a.threshold);
+        console.log(`% alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, dir=${a.direction}, trigger=${trigger}`);
+      } else if (a.type === 'mcap') {
+        curVal = cur.mcap;
+        trigger = curVal >= a.threshold;
+        console.log(`MCap alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, trigger=${trigger}`);
+      }
+
       if (trigger) {
         const now = Date.now();
-        if (a.lastTriggered && (now - a.lastTriggered) < 15*60*1000) {
-          if (Math.abs(curVal - (a.lastVal||0)) / (a.lastVal||1) < 0.2) continue;
+        // Cooldown: don't send again for 15 min unless price changes by >20%
+        if (a.lastTriggered && (now - a.lastTriggered) < 15 * 60 * 1000) {
+          const changePct = Math.abs(curVal - (a.lastVal || 0)) / (a.lastVal || 1);
+          if (changePct < 0.2) {
+            console.log(`⏸️ Cooldown active for ${a.token} – skipping`);
+            continue;
+          }
         }
         a.lastTriggered = now;
         a.lastVal = curVal;
         saveSessions();
-        const msg = `🔔 *Alert!* Token \`${shortenAddress(a.token)}\`\n${a.type} ${a.direction==='above'?'>':'<'} ${a.threshold} → current: ${a.type==='percent'?curVal.toFixed(2)+'%':a.type==='mcap'?'$'+curVal.toLocaleString():'$'+curVal.toFixed(6)}`;
-        try { await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' }); } catch {}
+
+        const msg = `🔔 *Alert!* Token \`${shortenAddress(a.token)}\`\n${a.type} ${a.direction === 'above' ? '>' : '<'} ${a.threshold} → current: ${a.type === 'percent' ? curVal.toFixed(2) + '%' : a.type === 'mcap' ? '$' + curVal.toLocaleString() : '$' + curVal.toFixed(6)}`;
+        try {
+          await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
+          console.log(`✅ Alert sent to ${uid} for ${a.token}`);
+        } catch (err) {
+          console.error(`Failed to send alert to ${uid}:`, err.message);
+        }
       }
     }
   }
 }
 
 async function checkTrackedTokens() {
+  console.log('🔄 Checking tracked tokens...');
   const tokenMap = new Map();
   for (const [uid, sess] of userSessions.entries()) {
-    for (const t of (sess.trackedTokens||[])) {
+    for (const t of (sess.trackedTokens || [])) {
       if (!tokenMap.has(t.address)) tokenMap.set(t.address, []);
       tokenMap.get(t.address).push({ uid, t });
     }
   }
+  if (!tokenMap.size) {
+    console.log('No tracked tokens.');
+    return;
+  }
+  console.log(`Found ${tokenMap.size} tracked tokens`);
+
   for (const [addr, users] of tokenMap.entries()) {
+    console.log(`Fetching data for ${addr}...`);
     const pair = await fetchTokenData(addr);
-    if (!pair) continue;
-    const price = parseFloat(pair.priceUsd)||0;
-    const trackedPrice = users[0].t.trackedPrice; // all share same tracked price for this addr
-    if (trackedPrice <= 0) continue;
-    const ratio = price / trackedPrice;
-    
+    if (!pair) {
+      console.log(`❌ No data for ${addr}`);
+      continue;
+    }
+    const price = parseFloat(pair.priceUsd) || 0;
+    console.log(`Current price of ${addr}: ${price}`);
+
     for (const { uid, t } of users) {
+      if (!t.trackedPrice || t.trackedPrice <= 0) continue;
+      const ratio = price / t.trackedPrice;
+      console.log(`User ${uid}: trackedPrice=${t.trackedPrice}, ratio=${ratio}`);
       const now = Date.now();
-      
-      // Notify when price multiplies (2x, 3x, 4x...)
+
+      // Notify on new integer multiplier (2x, 3x, 4x...)
       if (ratio >= 2) {
         const multiplier = Math.floor(ratio);
         if (!t.lastNotifiedMultiplier || multiplier > t.lastNotifiedMultiplier) {
           t.lastNotifiedMultiplier = multiplier;
-          await bot.telegram.sendMessage(uid, `🚀 *${multiplier}x Alert!* ${shortenAddress(addr)} has increased ${multiplier}x since you tracked it.\nPrice: $${price.toFixed(6)} (tracked $${trackedPrice.toFixed(6)})`, { parse_mode: 'Markdown' });
+          const msg = `🚀 *${multiplier}x Alert!* ${shortenAddress(addr)} has increased ${multiplier}x since you tracked it.\nPrice: $${price.toFixed(6)} (tracked $${t.trackedPrice.toFixed(6)})`;
+          try {
+            await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
+            console.log(`✅ ${multiplier}x alert sent to ${uid} for ${addr}`);
+          } catch (err) {
+            console.error(`Failed to send alert to ${uid}:`, err.message);
+          }
           saveSessions();
         }
       }
-      
-      // Notify when price halves (0.5x, 0.33x, 0.25x...)
+
+      // Notify on new integer divisor (1/2, 1/3, 1/4...)
       if (ratio <= 0.5) {
         const divisor = Math.floor(1 / ratio);
         if (!t.lastNotifiedDivisor || divisor > t.lastNotifiedDivisor) {
           t.lastNotifiedDivisor = divisor;
-          await bot.telegram.sendMessage(uid, `🔻 *${divisor}x Down Alert!* ${shortenAddress(addr)} has dropped to 1/${divisor} of tracked price.\nPrice: $${price.toFixed(6)} (tracked $${trackedPrice.toFixed(6)})`, { parse_mode: 'Markdown' });
+          const msg = `🔻 *${divisor}x Down Alert!* ${shortenAddress(addr)} has dropped to 1/${divisor} of tracked price.\nPrice: $${price.toFixed(6)} (tracked $${t.trackedPrice.toFixed(6)})`;
+          try {
+            await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
+            console.log(`✅ ${divisor}x down alert sent to ${uid} for ${addr}`);
+          } catch (err) {
+            console.error(`Failed to send alert to ${uid}:`, err.message);
+          }
           saveSessions();
         }
       }
@@ -1908,11 +1978,64 @@ bot.command('testpnl_bad', async (ctx) => {
     await ctx.reply(`❌ Failed to generate image: ${err.message}`);
   }
 });
+bot.command('testpnl_overall', async (ctx) => {
+  if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) return ctx.reply('❌ Admin only.');
+  try {
+    const session = getSession(ctx.from.id);
+    const referralCode = getReferralCode(ctx.from.id);
+    const botUser = (await bot.telegram.getMe()).username;
+    const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+    const img = await generatePnLImage({
+      pnlPercent: 44.8,
+      pair: "PEGASUS/TRADES",
+      time: "14d",
+      invested: "10.5 SOL ($840.00)",
+      current: "15.2 SOL ($1,216.00)",
+      qrData: qr,
+      username: ctx.from.username || ctx.from.first_name || 'admin'
+    });
+    await ctx.replyWithPhoto({ source: img }, { caption: "📊 Overall PNL: +44.8%" });
+  } catch (err) {
+    console.error('testpnl_overall error:', err);
+    await ctx.reply(`❌ Failed: ${err.message}`);
+  }
+});
+bot.command('testpnl_overall_bad', async (ctx) => {
+  if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) return ctx.reply('❌ Admin only.');
+  try {
+    const session = getSession(ctx.from.id);
+    const referralCode = getReferralCode(ctx.from.id);
+    const botUser = (await bot.telegram.getMe()).username;
+    const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+    const img = await generatePnLImage({
+      pnlPercent: -25.3,
+      pair: "PEGASUS/TRADES",
+      time: "7d",
+      invested: "20.0 SOL ($1,600.00)",
+      current: "14.9 SOL ($1,192.00)",
+      qrData: qr,
+      username: ctx.from.username || ctx.from.first_name || 'admin'
+    });
+    await ctx.replyWithPhoto({ source: img }, { caption: "📊 Overall PNL: -25.3%" });
+  } catch (err) {
+    console.error('testpnl_overall_bad error:', err);
+    await ctx.reply(`❌ Failed: ${err.message}`);
+  }
+});
 
 // Fallback for unknown commands
 bot.command('*', async (ctx) => {
   console.log('Unknown command:', ctx.message.text);
-  await ctx.reply('Unknown command. Try /start');
+  await ctx.reply(`
+Unknown command. Try:
+
+• /start - Main menu
+• /wallet - Wallet management
+• /buy - Quick buy
+• /sell - Quick sell
+• /settings - Bot settings
+• Or paste a Solana token address to analyze
+`);
 });
 
 // ======================= MESSAGE HANDLER =======================
@@ -2368,7 +2491,16 @@ Always double-check recipient addresses before sending. Blockchain transactions 
     return;
   }
   
-  await ctx.reply('I didn’t understand that. Try pasting a token address or /start.');
+  await ctx.reply(`
+I didn't understand that. Try:
+
+• Pasting a Solana token address to analyze
+• /start - Main menu
+• /wallet - Wallet management
+• /buy - Quick buy
+• /sell - Quick sell
+• /settings - Bot settings
+`);
 });
 
 // ======================= SEND TOKEN ANALYSIS =======================
