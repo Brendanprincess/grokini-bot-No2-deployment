@@ -1882,6 +1882,32 @@ bot.command('testpnl', async (ctx) => {
     await ctx.reply(`❌ Failed to generate image: ${err.message}`);
   }
 });
+// ======================= TESTPNL_BAD (ADMIN ONLY) =======================
+bot.command('testpnl_bad', async (ctx) => {
+  console.log('Testpnl_bad command received from', ctx.from.id);
+  if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) {
+    return ctx.reply('❌ This command is for admins only.');
+  }
+  try {
+    const session = getSession(ctx.from.id);
+    const referralCode = getReferralCode(ctx.from.id);
+    const botUser = (await bot.telegram.getMe()).username;
+    const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+    const img = await generatePnLImage({
+      pnlPercent: -50,
+      pair: "MONDAY/SOL",
+      time: "92h",
+      invested: "1.2 SOL ($99.29)",
+      current: "0.6 SOL ($49.64)",
+      qrData: qr,
+      username: ctx.from.username || ctx.from.first_name || 'admin'
+    });
+    await ctx.replyWithPhoto({ source: img }, { caption: "📊 Test PNL: -50%" });
+  } catch (err) {
+    console.error('testpnl_bad error:', err);
+    await ctx.reply(`❌ Failed to generate image: ${err.message}`);
+  }
+});
 
 // Fallback for unknown commands
 bot.command('*', async (ctx) => {
