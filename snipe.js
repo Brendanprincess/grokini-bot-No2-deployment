@@ -172,13 +172,11 @@ function deserializeSession(data) {
   return session;
 }
 
-// Helper to ensure the directory exists
 async function ensureDirectoryExists(filePath) {
   const dir = path.dirname(filePath);
   try {
     await fs.access(dir);
   } catch {
-    // Directory does not exist, create it recursively
     await fs.mkdir(dir, { recursive: true });
   }
 }
@@ -191,7 +189,6 @@ async function loadSessions() {
     for (const [uid, sd] of Object.entries(obj)) {
       userSessions.set(parseInt(uid), deserializeSession(sd));
     }
-    // Rebuild referral map
     for (const [uid, sess] of userSessions.entries()) {
       if (sess.referralCode) referralCodes.set(sess.referralCode, uid);
     }
@@ -505,7 +502,6 @@ async function generatePnLImage(data) {
   const canvas = createCanvas(bgImage ? bgImage.width : 1200, bgImage ? bgImage.height : 800);
   const ctx = canvas.getContext('2d');
 
-  // Background
   if (bgImage) {
     ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
   } else {
@@ -516,12 +512,10 @@ async function generatePnLImage(data) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Glow text helper
   function drawGlowText(x, y, text, fontFamily, fontSize, color) {
     ctx.font = `${fontSize}px "${fontFamily}"`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-
     for (let off = 1; off <= 5; off++) {
       ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
       ctx.fillText(text, x - off, y);
@@ -529,19 +523,15 @@ async function generatePnLImage(data) {
       ctx.fillText(text, x, y - off);
       ctx.fillText(text, x, y + off);
     }
-
     ctx.fillStyle = 'white';
     ctx.fillText(text, x, y);
   }
 
-  // Title
   const pegasusText = 'PEGASUS';
   ctx.font = `${FONT_MID_SIZE}px "OrbitronExtraBold"`;
   ctx.textAlign = 'center';
-
   const pegasusX = canvas.width / 2;
   const pegasusY = 60;
-
   for (let off = 1; off <= 5; off++) {
     ctx.fillStyle = `rgb(${glowColor.r}, ${glowColor.g}, ${glowColor.b})`;
     ctx.fillText(pegasusText, pegasusX - off, pegasusY);
@@ -549,7 +539,6 @@ async function generatePnLImage(data) {
     ctx.fillText(pegasusText, pegasusX, pegasusY - off);
     ctx.fillText(pegasusText, pegasusX, pegasusY + off);
   }
-
   ctx.fillStyle = 'white';
   ctx.fillText(pegasusText, pegasusX, pegasusY);
   ctx.textAlign = 'left';
@@ -557,100 +546,58 @@ async function generatePnLImage(data) {
   const x = Math.floor(canvas.width * 0.55);
   const yStart = 120;
 
-  // Token name
   ctx.font = `${FONT_MID_SIZE}px "OrbitronSemiBold"`;
   ctx.fillStyle = 'rgb(200,200,200)';
   ctx.textBaseline = 'top';
   ctx.fillText(pair, x, yStart);
 
-  // PnL %
   drawGlowText(x, yStart + 70, pnlText, 'OrbitronExtraBold', FONT_BIG_SIZE, glowColor);
 
-  // Time
   ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
   ctx.fillStyle = 'rgb(150,150,150)';
   ctx.fillText(`Time: ${time}`, x, yStart + 190);
 
-  // Labels
   ctx.fillStyle = 'rgb(120,120,120)';
   ctx.fillText('Invested', x, yStart + 260);
   ctx.fillText('Current Value', x, yStart + 360);
 
-  // === VALUES + PERFECT ALIGNMENT ===
   ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
   ctx.fillStyle = 'white';
   ctx.textBaseline = 'top';
-
   const investedY = yStart + 300;
   const currentY = yStart + 400;
-
   ctx.fillText(invested, x, investedY);
   ctx.fillText(current, x, currentY);
 
-  // Measure text (CRUCIAL)
   const investedMetrics = ctx.measureText(invested);
   const currentMetrics = ctx.measureText(current);
+  const investedHeight = investedMetrics.actualBoundingBoxAscent + investedMetrics.actualBoundingBoxDescent;
+  const currentHeight = currentMetrics.actualBoundingBoxAscent + currentMetrics.actualBoundingBoxDescent;
 
-  const investedHeight =
-    investedMetrics.actualBoundingBoxAscent +
-    investedMetrics.actualBoundingBoxDescent;
-
-  const currentHeight =
-    currentMetrics.actualBoundingBoxAscent +
-    currentMetrics.actualBoundingBoxDescent;
-
-  // === SOLANA LOGO (TRUE CENTERED) ===
   try {
     const logo = await loadImage(solanaLogoPath);
     const logoSize = 26;
     const logoMargin = 6;
-
-    // Optional micro tweak if needed (usually 0 or 1)
     const microAdjust = 6;
+    ctx.drawImage(logo, x - logoSize - logoMargin, investedY + (investedHeight/2) - (logoSize/2) + microAdjust, logoSize, logoSize);
+    ctx.drawImage(logo, x - logoSize - logoMargin, currentY + (currentHeight/2) - (logoSize/2) + microAdjust, logoSize, logoSize);
+  } catch (e) { console.warn('Logo load error:', e); }
 
-    ctx.drawImage(
-      logo,
-      x - logoSize - logoMargin,
-      investedY + (investedHeight / 2) - (logoSize / 2) + microAdjust,
-      logoSize,
-      logoSize
-    );
-
-    ctx.drawImage(
-      logo,
-      x - logoSize - logoMargin,
-      currentY + (currentHeight / 2) - (logoSize / 2) + microAdjust,
-      logoSize,
-      logoSize
-    );
-
-  } catch (e) {
-    console.warn('Logo load error:', e);
-  }
-
-  // QR Code
   if (qrData) {
     const qrSize = 150;
     const qrX = canvas.width - qrSize - 30;
     const qrY = canvas.height - qrSize - 30;
-
     try {
       const qrBuf = await QRCode.toBuffer(qrData, { width: qrSize, margin: 1 });
       const qrImg = await loadImage(qrBuf);
-
       ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
-
       ctx.font = `${FONT_SMALL_SIZE}px "OrbitronRegular"`;
       ctx.fillStyle = 'white';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(`@${username}`, qrX - 15, qrY + qrSize / 2);
-
+      ctx.fillText(`@${username}`, qrX - 15, qrY + qrSize/2);
       ctx.textAlign = 'left';
-
-    } catch (e) {
-      console.warn('QR error:', e);
-    }
+    } catch (e) { console.warn('QR error:', e); }
   }
 
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
@@ -663,36 +610,57 @@ bot.action(/^pnl_image_token_(.+)$/, async (ctx) => {
   const session = getSession(ctx.from.id);
   const wallet = getActiveWallet(session);
   if (!wallet) return ctx.reply('❌ No wallet');
-  const bal = await getTokenBalance(wallet.publicKey, token);
-  if (bal.amount <= 0) return ctx.reply('❌ No token balance');
+
+  const tokenBal = await getTokenBalance(wallet.publicKey, token);
+  if (tokenBal.amount <= 0) return ctx.reply('❌ No token balance');
+
   const pair = await fetchTokenData(token);
-  if (!pair) return ctx.reply('❌ Could not fetch price');
-  const price = parseFloat(pair.priceUsd) || 0;
+  if (!pair) return ctx.reply('❌ Could not fetch token price');
+  const currentTokenPriceUsd = parseFloat(pair.priceUsd) || 0;
   const solPrice = await getSolPrice();
+  if (currentTokenPriceUsd === 0 || solPrice === 0) {
+    return ctx.reply('❌ Price data unavailable. Try again later.');
+  }
+
   const tokenSymbol = pair.baseToken?.symbol || '???';
+
   const buys = session.tradeHistory.filter(t => t.tokenAddress === token && t.type === 'BUY');
-  if (!buys.length) return ctx.reply('❌ No buy history');
-  let totalSpentSol = 0, totalBought = 0;
-  for (const t of buys) { totalSpentSol += t.amountSol; totalBought += t.amountToken; }
-  const investedSol = totalSpentSol;
-  const investedUsd = investedSol * (buys[0]?.priceUsd || 0);
-  const currentValueSol = bal.amount * (solPrice / price);
-  const currentValueUsd = bal.amount * price;
+  if (!buys.length) return ctx.reply('❌ No buy history for this token');
+
+  let totalSpentSol = 0;
+  let totalBoughtTokens = 0;
+  for (const t of buys) {
+    totalSpentSol += t.amountSol || 0;
+    totalBoughtTokens += t.amountToken || 0;
+  }
+  if (totalSpentSol <= 0 || totalBoughtTokens <= 0) {
+    return ctx.reply('❌ Invalid buy data (missing SOL amount or token amount)');
+  }
+
+  const currentValueSol = tokenBal.amount * (solPrice / currentTokenPriceUsd);
+  const currentValueUsd = tokenBal.amount * currentTokenPriceUsd;
+  const investedUsd = totalSpentSol * solPrice;
   const pnlUsd = currentValueUsd - investedUsd;
-  const pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
+  const pnlPercent = (pnlUsd / investedUsd) * 100;
+
   const firstDate = new Date(buys[buys.length-1].timestamp);
   const diffHours = (Date.now() - firstDate) / (1000*3600);
   const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
+
   const referralCode = getReferralCode(ctx.from.id);
   const botUser = (await bot.telegram.getMe()).username;
   const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+
   const img = await generatePnLImage({
-    pnlPercent, pair: `${tokenSymbol}/SOL`, time: timeStr,
-    invested: `${investedSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
+    pnlPercent,
+    pair: `${tokenSymbol}/SOL`,
+    time: timeStr,
+    invested: `${totalSpentSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
     current: `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
-    qrData: qr, username: ctx.from.username || ctx.from.first_name || 'user'
+    qrData: qr,
+    username: ctx.from.username || ctx.from.first_name || 'user'
   });
-  await ctx.replyWithPhoto({ source: img }, { caption: `📊 PNL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
+  await ctx.replyWithPhoto({ source: img }, { caption: `📊 PnL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
 });
 
 bot.action('pnl_image_overall', async (ctx) => {
@@ -700,20 +668,34 @@ bot.action('pnl_image_overall', async (ctx) => {
   const session = getSession(ctx.from.id);
   const history = session.tradeHistory || [];
   if (!history.length) return ctx.reply('❌ No trades');
-  const spentSol = history.filter(t => t.type === 'BUY').reduce((s,t)=>s+t.amountSol,0);
-  const spentUsd = history.filter(t => t.type === 'BUY').reduce((s,t)=>s+t.valueUsd,0);
-  const recvSol = history.filter(t => t.type === 'SELL').reduce((s,t)=>s+t.amountSol,0);
-  const recvUsd = history.filter(t => t.type === 'SELL').reduce((s,t)=>s+t.valueUsd,0);
-  const pnlUsd = recvUsd - spentUsd;
+
+  let totalSpentSol = 0;
+  let totalReceivedSol = 0;
+  for (const t of history) {
+    if (t.type === 'BUY') totalSpentSol += t.amountSol || 0;
+    else if (t.type === 'SELL') totalReceivedSol += t.amountSol || 0;
+  }
+
+  const solPrice = await getSolPrice();
+  if (solPrice === 0) return ctx.reply('❌ Cannot fetch SOL price. Try again later.');
+
+  const spentUsd = totalSpentSol * solPrice;
+  const receivedUsd = totalReceivedSol * solPrice;
+  const pnlUsd = receivedUsd - spentUsd;
   const pnlPercent = spentUsd ? (pnlUsd / spentUsd) * 100 : 0;
-  const timeStr = `${Math.round((Date.now() - new Date(history[history.length-1].timestamp)) / (1000*3600))}h`;
+
+  const firstTradeDate = new Date(history[history.length-1].timestamp);
+  const diffHours = (Date.now() - firstTradeDate) / (1000*3600);
+  const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
+
   const referralCode = getReferralCode(ctx.from.id);
   const botUser = (await bot.telegram.getMe()).username;
   const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+
   const img = await generatePnLImage({
     pnlPercent, pair: 'PEGASUS/TRADES', time: timeStr,
-    invested: `${spentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
-    current: `${recvSol.toFixed(4)} SOL ($${recvUsd.toFixed(2)})`,
+    invested: `${totalSpentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
+    current: `${totalReceivedSol.toFixed(4)} SOL ($${receivedUsd.toFixed(2)})`,
     qrData: qr, username: ctx.from.username || ctx.from.first_name || 'user'
   });
   await ctx.replyWithPhoto({ source: img }, { caption: `📊 Overall PNL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
@@ -880,7 +862,6 @@ async function handleSell(ctx, percent, token) {
     const price = pair ? parseFloat(pair.priceUsd) : 0;
     const solPrice = await getSolPrice();
     const valueUsd = receivedSol * solPrice;
-    // compute PNL from buys
     const buys = session.tradeHistory.filter(t => t.tokenAddress === token && t.type === 'BUY');
     let totalSpent = 0, totalBought = 0;
     for (const b of buys) { totalSpent += b.valueUsd; totalBought += b.amountToken; }
@@ -1061,27 +1042,24 @@ async function showPositionsMenu(ctx, edit = false) {
     return;
   }
 
-  // Build open positions from trade history
   const history = session.tradeHistory || [];
-  const positions = new Map(); // tokenAddress -> { totalBought, totalSold, totalSpentUsd, avgBuyPrice, symbol }
+  const positions = new Map();
 
-  // Aggregate buys and sells
   for (const trade of history) {
     const token = trade.tokenAddress;
     if (!token) continue;
     if (!positions.has(token)) {
-      positions.set(token, { totalBought: 0, totalSold: 0, totalSpentUsd: 0, symbol: trade.tokenSymbol || '???' });
+      positions.set(token, { totalBought: 0, totalSold: 0, totalSpentSol: 0, symbol: trade.tokenSymbol || '???' });
     }
     const pos = positions.get(token);
     if (trade.type === 'BUY') {
       pos.totalBought += trade.amountToken || 0;
-      pos.totalSpentUsd += trade.valueUsd || 0;
+      pos.totalSpentSol += trade.amountSol || 0;
     } else if (trade.type === 'SELL') {
       pos.totalSold += trade.amountToken || 0;
     }
   }
 
-  // Filter tokens with net balance > 0
   const openPositions = [];
   for (const [token, pos] of positions.entries()) {
     const net = pos.totalBought - pos.totalSold;
@@ -1090,8 +1068,8 @@ async function showPositionsMenu(ctx, edit = false) {
         token,
         symbol: pos.symbol,
         netAmount: net,
-        totalSpentUsd: pos.totalSpentUsd,
-        avgBuyPriceUsd: pos.totalSpentUsd / pos.totalBought,
+        totalSpentSol: pos.totalSpentSol,
+        avgBuyPriceSol: pos.totalSpentSol / pos.totalBought,
       });
     }
   }
@@ -1104,39 +1082,41 @@ async function showPositionsMenu(ctx, edit = false) {
     return;
   }
 
-  // Fetch current price & market cap for each open position (parallel)
   const tokenData = {};
+  const solPrice = await getSolPrice();
   await Promise.all(openPositions.map(async (pos) => {
     try {
       const pair = await fetchTokenData(pos.token);
       if (pair) {
+        const price = parseFloat(pair.priceUsd) || 0;
         tokenData[pos.token] = {
-          price: parseFloat(pair.priceUsd) || 0,
+          price: price,
           mcap: pair.marketCap || pair.fdv || 0,
           change24: pair.priceChange?.h24 || 0,
+          currentValueSol: pos.netAmount * (solPrice / price),
+          currentValueUsd: pos.netAmount * price,
         };
       } else {
-        tokenData[pos.token] = { price: 0, mcap: 0, change24: 0 };
+        tokenData[pos.token] = { price: 0, mcap: 0, change24: 0, currentValueSol: 0, currentValueUsd: 0 };
       }
     } catch {
-      tokenData[pos.token] = { price: 0, mcap: 0, change24: 0 };
+      tokenData[pos.token] = { price: 0, mcap: 0, change24: 0, currentValueSol: 0, currentValueUsd: 0 };
     }
   }));
 
-  // Build message
   let message = `📊 *Your Positions*\n💼 Wallet: \`${shortenAddress(activeWallet.publicKey)}\`\n━━━━━━━━━━━━━━━━━━\n`;
   for (const pos of openPositions) {
     const data = tokenData[pos.token];
-    const currentPrice = data.price;
-    const currentValueUsd = pos.netAmount * currentPrice;
-    const pnlUsd = currentValueUsd - pos.totalSpentUsd;
-    const pnlPercent = pos.totalSpentUsd > 0 ? (pnlUsd / pos.totalSpentUsd) * 100 : 0;
+    const currentValueUsd = data.currentValueUsd;
+    const investedUsd = pos.totalSpentSol * solPrice;
+    const pnlUsd = currentValueUsd - investedUsd;
+    const pnlPercent = investedUsd > 0 ? (pnlUsd / investedUsd) * 100 : 0;
     const trendEmoji = data.change24 >= 0 ? '🟢' : '🔴';
 
     message += `*${pos.symbol}* (\`${shortenAddress(pos.token)}\`)\n`;
     message += `💰 *Net:* ${pos.netAmount.toFixed(4)} tokens\n`;
-    message += `📈 *Avg Buy:* $${pos.avgBuyPriceUsd.toFixed(6)}\n`;
-    message += `💵 *Current:* $${currentPrice.toFixed(6)}\n`;
+    message += `📈 *Avg Buy:* ${pos.avgBuyPriceSol.toFixed(6)} SOL\n`;
+    message += `💵 *Current:* $${data.price.toFixed(6)}\n`;
     message += `💲 *Value:* $${currentValueUsd.toFixed(2)}\n`;
     message += `📊 *PNL:* ${pnlUsd >= 0 ? '🟢 +' : '🔴 '}$${Math.abs(pnlUsd).toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n`;
     message += `${trendEmoji} *24h:* ${data.change24 >= 0 ? '+' : ''}${data.change24.toFixed(2)}%\n`;
@@ -1144,7 +1124,6 @@ async function showPositionsMenu(ctx, edit = false) {
     message += `━━━━━━━━━━━━━━━━━━\n`;
   }
 
-  // Build inline buttons for each position
   const keyboardButtons = [];
   for (const pos of openPositions) {
     keyboardButtons.push([
@@ -1215,7 +1194,6 @@ async function showTradeHistory(ctx, edit = false) {
     const keyboard = Markup.inlineKeyboard([
       [Markup.button.callback('📈 View PNL Report', 'menu_pnl_report')],
       [Markup.button.callback('📥 Export CSV', 'export_history_csv')],
-      // Inside showPNLReport, in the keyboard definition, add:
       [Markup.button.callback('📸 Generate PnL Image', 'pnl_image_overall')],
       [Markup.button.callback('🗑️ Clear History', 'clear_history_confirm')],
       [Markup.button.callback('« Back', 'back_main')]
@@ -1262,7 +1240,13 @@ async function showPNLReport(ctx, edit = false) {
     const pnl24hEmoji = pnl24h >= 0 ? '🟢' : '🔴';
     const pnl24hSign = pnl24h >= 0 ? '+' : '';
     const message = `📈 *PNL REPORT*\n\n━━━━━━━━━━━━━━━━━━\n💰 *OVERALL PERFORMANCE*\n${totalEmoji} *Total PNL: ${totalSign}$${Math.abs(totalPnl).toFixed(2)}*\n📊 Trades: ${totalTrades} (🟢${buyTrades} buys | 🔴${sellTrades} sells)\n✅ Wins: ${profitableTrades} | ❌ Losses: ${lossTrades}\n🎯 Win Rate: ${winRate}%\n💵 Volume: $${totalVolume.toFixed(2)}\n\n━━━━━━━━━━━━━━━━━━\n⏰ *LAST 24 HOURS*\n${pnl24hEmoji} PNL: ${pnl24hSign}$${Math.abs(pnl24h).toFixed(2)}\n📊 Trades: ${trades24h.length}\n\n━━━━━━━━━━━━━━━━━━\n🪙 *TOP TOKENS*${tokenBreakdown}\n━━━━━━━━━━━━━━━━━━`;
-    const keyboard = Markup.inlineKeyboard([[Markup.button.callback('📜 Full History', 'menu_history')], [Markup.button.callback('📥 Export CSV', 'export_pnl_csv')], [Markup.button.callback('🔄 Refresh', 'menu_pnl_report')], [Markup.button.callback('« Back', 'back_main')]]);
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('📜 Full History', 'menu_history')],
+      [Markup.button.callback('📥 Export CSV', 'export_pnl_csv')],
+      [Markup.button.callback('📸 Generate PnL Image', 'pnl_image_overall')],
+      [Markup.button.callback('🔄 Refresh', 'menu_pnl_report')],
+      [Markup.button.callback('« Back', 'back_main')]
+    ]);
     if (edit && ctx.callbackQuery) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
     else await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
   } catch (error) { await ctx.reply('❌ Error loading PNL report.'); }
@@ -1340,6 +1324,9 @@ async function showHelpMenu(ctx, edit = false) {
 /settings - Bot settings
 /referral - Your referral program
 /help - Show this help menu
+/pnl - Overall PnL image
+/pnl [address] - PnL image for a token you hold
+/closedpnl [address] - PnL image for a fully sold token
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *Quick Actions:*
@@ -1539,7 +1526,7 @@ A: Earn 10% of trading fees from referred users
   });
 });
 
-// ======================= CALLBACK HANDLERS (continued) =======================
+// ======================= CALLBACK HANDLERS =======================
 bot.action('back_main', async (ctx) => { await ctx.answerCbQuery(); await showMainMenu(ctx, true); });
 bot.action('refresh_main', async (ctx) => { await ctx.answerCbQuery('Refreshed'); await showMainMenu(ctx, true); });
 bot.action('noop', async (ctx) => { await ctx.answerCbQuery(); });
@@ -1974,7 +1961,7 @@ async function checkAlerts() {
     } else {
       console.log(`❌ No data for ${addr}`);
     }
-    await new Promise(r => setTimeout(r, 500)); // rate limit
+    await new Promise(r => setTimeout(r, 500));
   }
 
   for (const [uid, sess] of userSessions.entries()) {
@@ -2002,7 +1989,6 @@ async function checkAlerts() {
 
       if (trigger) {
         const now = Date.now();
-        // Cooldown: don't send again for 15 min unless price changes by >20%
         if (a.lastTriggered && (now - a.lastTriggered) < 15 * 60 * 1000) {
           const changePct = Math.abs(curVal - (a.lastVal || 0)) / (a.lastVal || 1);
           if (changePct < 0.2) {
@@ -2057,7 +2043,6 @@ async function checkTrackedTokens() {
       console.log(`User ${uid}: trackedPrice=${t.trackedPrice}, ratio=${ratio}`);
       const now = Date.now();
 
-      // Notify on new integer multiplier (2x, 3x, 4x...)
       if (ratio >= 2) {
         const multiplier = Math.floor(ratio);
         if (!t.lastNotifiedMultiplier || multiplier > t.lastNotifiedMultiplier) {
@@ -2073,7 +2058,6 @@ async function checkTrackedTokens() {
         }
       }
 
-      // Notify on new integer divisor (1/2, 1/3, 1/4...)
       if (ratio <= 0.5) {
         const divisor = Math.floor(1 / ratio);
         if (!t.lastNotifiedDivisor || divisor > t.lastNotifiedDivisor) {
@@ -2132,7 +2116,6 @@ bot.command('testpnl', async (ctx) => {
     await ctx.reply(`❌ Failed to generate image: ${err.message}`);
   }
 });
-// ======================= TESTPNL_BAD (ADMIN ONLY) =======================
 bot.command('testpnl_bad', async (ctx) => {
   console.log('Testpnl_bad command received from', ctx.from.id);
   if (!ADMIN_CHAT_IDS.includes(ctx.from.id.toString())) {
@@ -2202,38 +2185,124 @@ bot.command('testpnl_overall_bad', async (ctx) => {
     await ctx.reply(`❌ Failed: ${err.message}`);
   }
 });
-// ======================= USER PNL COMMAND =======================
+
+// ======================= USER PNL COMMANDS =======================
 bot.command('pnl', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
   const tokenArg = args[0];
 
   if (tokenArg && isSolanaAddress(tokenArg)) {
-    // PnL for a specific token
     await sendTokenPnLImage(ctx, tokenArg);
   } else if (!tokenArg) {
-    // Overall PnL
     await sendOverallPnLImage(ctx);
   } else {
     await ctx.reply('❌ Invalid token address. Use `/pnl` for overall PnL or `/pnl <token_address>`.', { parse_mode: 'Markdown' });
   }
 });
 
-// Helper: send overall PnL image
+bot.command('closedpnl', async (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const tokenArg = args[0];
+
+  if (!tokenArg || !isSolanaAddress(tokenArg)) {
+    return ctx.reply('❌ Usage: `/closedpnl <token_address>`\n\nExample: `/closedpnl So11111111111111111111111111111111111111112`', { parse_mode: 'Markdown' });
+  }
+
+  await sendClosedTokenPnLImage(ctx, tokenArg);
+});
+
+async function sendClosedTokenPnLImage(ctx, tokenAddress) {
+  const session = getSession(ctx.from.id);
+  const history = session.tradeHistory || [];
+
+  const buys = history.filter(t => t.tokenAddress === tokenAddress && t.type === 'BUY');
+  const sells = history.filter(t => t.tokenAddress === tokenAddress && t.type === 'SELL');
+
+  if (buys.length === 0) {
+    return ctx.reply('❌ No buy history found for this token.');
+  }
+
+  let totalSpentSol = 0;
+  let totalBoughtTokens = 0;
+  for (const t of buys) {
+    totalSpentSol += t.amountSol || 0;
+    totalBoughtTokens += t.amountToken || 0;
+  }
+
+  let totalReceivedSol = 0;
+  let totalSoldTokens = 0;
+  for (const t of sells) {
+    totalReceivedSol += t.amountSol || 0;
+    totalSoldTokens += t.amountToken || 0;
+  }
+
+  const isFullyClosed = Math.abs(totalBoughtTokens - totalSoldTokens) < 0.000001;
+  if (!isFullyClosed) {
+    return ctx.reply('⚠️ You still hold some of this token. Use `/pnl <address>` for open positions or `/sell` to close first.');
+  }
+
+  if (totalSpentSol <= 0) {
+    return ctx.reply('❌ Invalid buy data (missing SOL amount).');
+  }
+
+  const pnlSol = totalReceivedSol - totalSpentSol;
+  const solPrice = await getSolPrice();
+  if (solPrice === 0) return ctx.reply('❌ Cannot fetch SOL price. Try again later.');
+  const pnlPercent = (pnlSol / totalSpentSol) * 100;
+
+  const firstBuyDate = new Date(buys[buys.length-1].timestamp);
+  const lastSellDate = sells.length ? new Date(sells[0].timestamp) : new Date();
+  const diffHours = (lastSellDate - firstBuyDate) / (1000*3600);
+  const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
+
+  const tokenSymbol = buys[0]?.tokenSymbol || '???';
+
+  const referralCode = getReferralCode(ctx.from.id);
+  const botUser = (await bot.telegram.getMe()).username;
+  const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+
+  try {
+    const img = await generatePnLImage({
+      pnlPercent,
+      pair: `${tokenSymbol}/SOL (CLOSED)`,
+      time: timeStr,
+      invested: `${totalSpentSol.toFixed(4)} SOL ($${(totalSpentSol * solPrice).toFixed(2)})`,
+      current: `${totalReceivedSol.toFixed(4)} SOL ($${(totalReceivedSol * solPrice).toFixed(2)})`,
+      qrData: qr,
+      username: ctx.from.username || ctx.from.first_name || 'user'
+    });
+    await ctx.replyWithPhoto({ source: img }, { caption: `📊 *Closed Position PnL*: ${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%` });
+  } catch (err) {
+    console.error('Closed PnL image error:', err);
+    await ctx.reply(`❌ Failed to generate image: ${err.message}`);
+  }
+}
+
 async function sendOverallPnLImage(ctx) {
   const session = getSession(ctx.from.id);
   const history = session.tradeHistory || [];
   if (!history.length) {
-    return ctx.reply('❌ No trades found. Start trading to see your PnL report.');
+    return ctx.reply('❌ No trades found.');
   }
 
-  const spentSol = history.filter(t => t.type === 'BUY').reduce((s,t)=>s+t.amountSol,0);
-  const spentUsd = history.filter(t => t.type === 'BUY').reduce((s,t)=>s+t.valueUsd,0);
-  const recvSol = history.filter(t => t.type === 'SELL').reduce((s,t)=>s+t.amountSol,0);
-  const recvUsd = history.filter(t => t.type === 'SELL').reduce((s,t)=>s+t.valueUsd,0);
-  const pnlUsd = recvUsd - spentUsd;
+  let totalSpentSol = 0;
+  let totalReceivedSol = 0;
+  for (const t of history) {
+    if (t.type === 'BUY') {
+      totalSpentSol += t.amountSol || 0;
+    } else if (t.type === 'SELL') {
+      totalReceivedSol += t.amountSol || 0;
+    }
+  }
+
+  const solPrice = await getSolPrice();
+  if (solPrice === 0) return ctx.reply('❌ Cannot fetch SOL price. Try again later.');
+
+  const spentUsd = totalSpentSol * solPrice;
+  const receivedUsd = totalReceivedSol * solPrice;
+  const pnlUsd = receivedUsd - spentUsd;
   const pnlPercent = spentUsd ? (pnlUsd / spentUsd) * 100 : 0;
 
-  // Calculate time span from first trade to now
   const firstTradeDate = new Date(history[history.length-1].timestamp);
   const diffHours = (Date.now() - firstTradeDate) / (1000*3600);
   const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
@@ -2247,8 +2316,8 @@ async function sendOverallPnLImage(ctx) {
       pnlPercent,
       pair: 'PEGASUS/TRADES',
       time: timeStr,
-      invested: `${spentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
-      current: `${recvSol.toFixed(4)} SOL ($${recvUsd.toFixed(2)})`,
+      invested: `${totalSpentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
+      current: `${totalReceivedSol.toFixed(4)} SOL ($${receivedUsd.toFixed(2)})`,
       qrData: qr,
       username: ctx.from.username || ctx.from.first_name || 'user'
     });
@@ -2259,42 +2328,45 @@ async function sendOverallPnLImage(ctx) {
   }
 }
 
-// Helper: send PnL image for a specific token
 async function sendTokenPnLImage(ctx, tokenAddress) {
   const session = getSession(ctx.from.id);
   const wallet = getActiveWallet(session);
-  if (!wallet) return ctx.reply('❌ No wallet connected. Use /wallet to create or import one.');
+  if (!wallet) return ctx.reply('❌ No wallet connected.');
 
-  // Check token balance
   const tokenBal = await getTokenBalance(wallet.publicKey, tokenAddress);
   if (tokenBal.amount <= 0) {
     return ctx.reply('❌ You have no balance of this token.');
   }
 
-  // Fetch token price
   const pair = await fetchTokenData(tokenAddress);
   if (!pair) return ctx.reply('❌ Could not fetch token price.');
-  const price = parseFloat(pair.priceUsd) || 0;
+  const currentTokenPriceUsd = parseFloat(pair.priceUsd) || 0;
   const solPrice = await getSolPrice();
+  if (currentTokenPriceUsd === 0 || solPrice === 0) {
+    return ctx.reply('❌ Price data unavailable. Try again later.');
+  }
+
   const tokenSymbol = pair.baseToken?.symbol || '???';
 
-  // Find all buy trades for this token
   const buys = session.tradeHistory.filter(t => t.tokenAddress === tokenAddress && t.type === 'BUY');
   if (!buys.length) return ctx.reply('❌ No buy history for this token.');
 
-  let totalSpentSol = 0, totalBought = 0;
+  let totalSpentSol = 0;
+  let totalBoughtTokens = 0;
   for (const t of buys) {
-    totalSpentSol += t.amountSol;
-    totalBought += t.amountToken;
+    totalSpentSol += t.amountSol || 0;
+    totalBoughtTokens += t.amountToken || 0;
   }
-  const investedSol = totalSpentSol;
-  const investedUsd = investedSol * (buys[0]?.priceUsd || 0);
-  const currentValueSol = tokenBal.amount * (solPrice / price);
-  const currentValueUsd = tokenBal.amount * price;
-  const pnlUsd = currentValueUsd - investedUsd;
-  const pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
+  if (totalSpentSol <= 0 || totalBoughtTokens <= 0) {
+    return ctx.reply('❌ Invalid buy data.');
+  }
 
-  // Time since first buy
+  const currentValueSol = tokenBal.amount * (solPrice / currentTokenPriceUsd);
+  const currentValueUsd = tokenBal.amount * currentTokenPriceUsd;
+  const investedUsd = totalSpentSol * solPrice;
+  const pnlUsd = currentValueUsd - investedUsd;
+  const pnlPercent = (pnlUsd / investedUsd) * 100;
+
   const firstDate = new Date(buys[buys.length-1].timestamp);
   const diffHours = (Date.now() - firstDate) / (1000*3600);
   const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
@@ -2308,7 +2380,7 @@ async function sendTokenPnLImage(ctx, tokenAddress) {
       pnlPercent,
       pair: `${tokenSymbol}/SOL`,
       time: timeStr,
-      invested: `${investedSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
+      invested: `${totalSpentSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
       current: `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
       qrData: qr,
       username: ctx.from.username || ctx.from.first_name || 'user'
@@ -2340,7 +2412,6 @@ bot.on('text', async (ctx) => {
   const session = getSession(ctx.from.id);
   const text = ctx.message.text.trim();
   
-  // Process state handlers (transfer, custom sell, etc.)
   if (session.state === 'AWAITING_SEED') {
     session.state = null;
     try {
@@ -2776,7 +2847,6 @@ Always double-check recipient addresses before sending. Blockchain transactions 
     return;
   }
   
-  // Token analysis
   if (isSolanaAddress(text)) {
     if (session.pendingTrade) {
       if (session.pendingTrade.type === 'buy') await handleBuy(ctx, session.pendingTrade.amount, text);
