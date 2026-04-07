@@ -17,7 +17,8 @@ import {
   getAssociatedTokenAddress,
   createTransferInstruction,
   createAssociatedTokenAccountInstruction,
-  getAccount
+  getAccount,
+  getMint
 } from '@solana/spl-token';
 import fetch from 'node-fetch';
 import bs58 from 'bs58';
@@ -139,6 +140,50 @@ const COMMISSION_BPS = Math.floor(COMMISSION_PERCENTAGE * 100);
 
 const bot = new Telegraf(BOT_TOKEN);
 const connection = new Connection(SOLANA_RPC, 'confirmed');
+
+const mintDecimalsCache = new Map();
+
+function amountFromBaseUnits(amountStr, decimals) {
+  const s = String(amountStr ?? '0').replace(/^0+/, '') || '0';
+  const d = Math.max(0, Math.min(18, Number(decimals) || 0));
+  if (d === 0) return Number(s);
+  const padded = s.padStart(d + 1, '0');
+  const intPart = padded.slice(0, -d);
+  const fracPartRaw = padded.slice(-d);
+  const fracPart = fracPartRaw.replace(/0+$/, '');
+  return Number(fracPart ? `${intPart}.${fracPart}` : intPart);
+}
+
+async function getMintDecimals(mintAddress) {
+  if (!mintAddress) return 9;
+  if (mintDecimalsCache.has(mintAddress)) return mintDecimalsCache.get(mintAddress);
+  try {
+    const mint = await getMint(connection, new PublicKey(mintAddress));
+    const dec = Number(mint.decimals);
+    const safeDec = Number.isFinite(dec) ? dec : 9;
+    mintDecimalsCache.set(mintAddress, safeDec);
+    return safeDec;
+  } catch {
+    return 9;
+  }
+}
+
+function resolveTradeTokenAmount(trade) {
+  const amountToken = Number(trade?.amountToken);
+  const valueUsd = Number(trade?.valueUsd);
+  const priceUsd = Number(trade?.priceUsd);
+
+  if (Number.isFinite(valueUsd) && valueUsd > 0 && Number.isFinite(priceUsd) && priceUsd > 0) {
+    const inferred = valueUsd / priceUsd;
+    if (!Number.isFinite(amountToken) || amountToken <= 0) return inferred;
+    const impliedValue = amountToken * priceUsd;
+    const ratio = impliedValue / valueUsd;
+    if (!Number.isFinite(ratio) || ratio > 10 || ratio < 0.1) return inferred;
+  }
+
+  if (Number.isFinite(amountToken) && amountToken > 0) return amountToken;
+  return 0;
+}
 
 // ======================= DEBUG LOGGING =======================
 bot.use(async (ctx, next) => {
@@ -937,7 +982,8 @@ async function handleBuy(ctx, amount, token) {
   try {
     const quote = await getJupiterQuote(SOL_MINT, token, Math.floor(amount * LAMPORTS_PER_SOL), Math.floor(session.settings.slippage*100), COMMISSION_BPS);
     const result = await executeJupiterSwap(quote, wallet, session.settings.priorityFee, 0, COMMISSION_WALLET);
-    const received = parseInt(quote.outAmount) / (10 ** (quote.outputDecimals||9));
+    const outputDecimals = await getMintDecimals(token);
+    const received = amountFromBaseUnits(quote.outAmount, outputDecimals);
     const pair = await fetchTokenData(token);
     const price = pair ? parseFloat(pair.priceUsd) : 0;
     const solPrice = await getSolPrice();
@@ -966,14 +1012,14 @@ async function handleSell(ctx, percent, token) {
   try {
     const quote = await getJupiterQuote(token, SOL_MINT, rawAmount, Math.floor(session.settings.slippage*100), COMMISSION_BPS);
     const result = await executeJupiterSwap(quote, wallet, session.settings.priorityFee, 0, COMMISSION_WALLET);
-    const receivedSol = parseInt(quote.outAmount) / LAMPORTS_PER_SOL;
+    const receivedSol = amountFromBaseUnits(quote.outAmount, 9);
     const pair = await fetchTokenData(token);
     const price = pair ? parseFloat(pair.priceUsd) : 0;
     const solPrice = await getSolPrice();
     const valueUsd = receivedSol * solPrice;
     const buys = session.tradeHistory.filter(t => t.tokenAddress === token && t.type === 'BUY');
     let totalSpent = 0, totalBought = 0;
-    for (const b of buys) { totalSpent += b.valueUsd; totalBought += b.amountToken; }
+    for (const b of buys) { totalSpent += b.valueUsd || 0; totalBought += resolveTradeTokenAmount(b); }
     const avgPrice = totalBought ? totalSpent / totalBought : 0;
     const costBasis = sellAmount * avgPrice;
     const pnl = valueUsd - costBasis;
@@ -1305,25 +1351,56 @@ async function showPNLReport(ctx, edit = false) {
     const buyTrades = history.filter(t => t.type === 'BUY').length;
     const sellTrades = history.filter(t => t.type === 'SELL').length;
     const totalVolume = history.reduce((sum, t) => sum + (t.valueUsd || 0), 0);
-    const totalPnl = history.reduce((sum, t) => sum + (t.pnlUsd || 0), 0);
-    const profitableTrades = history.filter(t => t.pnlUsd > 0).length;
-    const lossTrades = history.filter(t => t.pnlUsd < 0).length;
-    const winRate = totalTrades > 0 ? ((profitableTrades / totalTrades) * 100).toFixed(1) : 0;
-    const totalEmoji = totalPnl >= 0 ? '🟢' : '🔴';
-    const totalSign = totalPnl >= 0 ? '+' : '';
     const tokenStats = {};
     const last24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    history.forEach(trade => {
-      if (!tokenStats[trade.tokenAddress]) tokenStats[trade.tokenAddress] = { symbol: trade.tokenSymbol || 'Unknown', name: trade.tokenName || 'Unknown', buys: 0, sells: 0, totalBought: 0, totalSold: 0, totalSpent: 0, totalReceived: 0, pnl: 0 };
-      const stats = tokenStats[trade.tokenAddress];
-      if (trade.type === 'BUY') { stats.buys++; stats.totalBought += trade.amountToken || 0; stats.totalSpent += trade.valueUsd || 0; }
-      else { stats.sells++; stats.totalSold += trade.amountToken || 0; stats.totalReceived += trade.valueUsd || 0; const avgBuyPrice = stats.totalBought > 0 ? stats.totalSpent / stats.totalBought : 0; const costBasis = (trade.amountToken || 0) * avgBuyPrice; stats.pnl += (trade.valueUsd || 0) - costBasis; }
-    });
+    let totalPnl = 0;
+    let pnl24h = 0;
+    let profitableTrades = 0;
+    let lossTrades = 0;
+
+    const tradesByTime = [...history].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    for (const trade of tradesByTime) {
+      const token = trade.tokenAddress;
+      if (!token) continue;
+      if (!tokenStats[token]) tokenStats[token] = { symbol: trade.tokenSymbol || 'Unknown', name: trade.tokenName || trade.tokenSymbol || 'Unknown', buys: 0, sells: 0, totalBought: 0, totalSpent: 0, totalReceived: 0, volume: 0, pnl: 0 };
+      const stats = tokenStats[token];
+      const valueUsd = Number(trade.valueUsd) || 0;
+      const qty = resolveTradeTokenAmount(trade);
+      stats.volume += valueUsd;
+
+      if (trade.type === 'BUY') {
+        stats.buys++;
+        stats.totalBought += qty;
+        stats.totalSpent += valueUsd;
+        continue;
+      }
+
+      if (trade.type === 'SELL') {
+        stats.sells++;
+        stats.totalReceived += valueUsd;
+        const avgCost = stats.totalBought > 0 ? stats.totalSpent / stats.totalBought : 0;
+        const costBasis = qty * avgCost;
+        const pnl = valueUsd - costBasis;
+        stats.pnl += pnl;
+        totalPnl += pnl;
+        if (pnl > 0) profitableTrades++;
+        else if (pnl < 0) lossTrades++;
+
+        stats.totalBought = Math.max(0, stats.totalBought - qty);
+        stats.totalSpent = Math.max(0, stats.totalSpent - costBasis);
+
+        if (new Date(trade.timestamp) >= last24Hours) pnl24h += pnl;
+      }
+    }
+
+    const closedTrades = profitableTrades + lossTrades;
+    const winRate = closedTrades > 0 ? ((profitableTrades / closedTrades) * 100).toFixed(1) : 0;
+    const totalEmoji = totalPnl >= 0 ? '🟢' : '🔴';
+    const totalSign = totalPnl >= 0 ? '+' : '';
     let tokenBreakdown = '';
-    const sortedTokens = Object.values(tokenStats).sort((a,b) => (b.totalSpent + b.totalReceived) - (a.totalSpent + a.totalReceived)).slice(0,5);
-    sortedTokens.forEach(token => { const pnlEmoji = token.pnl >= 0 ? '🟢' : '🔴'; const pnlSign = token.pnl >= 0 ? '+' : ''; tokenBreakdown += `\n${pnlEmoji} *${token.symbol}*\n   🟢 ${token.buys} buys | 🔴 ${token.sells} sells\n   💰 $${(token.totalSpent + token.totalReceived).toFixed(2)}\n   📊 PNL: ${pnlSign}$${Math.abs(token.pnl).toFixed(2)}`; });
+    const sortedTokens = Object.values(tokenStats).sort((a, b) => (b.volume || 0) - (a.volume || 0)).slice(0, 5);
+    sortedTokens.forEach(token => { const pnlEmoji = token.pnl >= 0 ? '🟢' : '🔴'; const pnlSign = token.pnl >= 0 ? '+' : ''; tokenBreakdown += `\n${pnlEmoji} *${token.symbol}*\n   🟢 ${token.buys} buys | 🔴 ${token.sells} sells\n   💰 $${(token.volume || 0).toFixed(2)}\n   📊 PNL: ${pnlSign}$${Math.abs(token.pnl).toFixed(2)}`; });
     const trades24h = history.filter(t => new Date(t.timestamp) >= last24Hours);
-    const pnl24h = trades24h.reduce((sum, t) => sum + (t.pnlUsd || 0), 0);
     const pnl24hEmoji = pnl24h >= 0 ? '🟢' : '🔴';
     const pnl24hSign = pnl24h >= 0 ? '+' : '';
     const message = `📈 *PNL REPORT*\n\n━━━━━━━━━━━━━━━━━━\n💰 *OVERALL PERFORMANCE*\n${totalEmoji} *Total PNL: ${totalSign}$${Math.abs(totalPnl).toFixed(2)}*\n📊 Trades: ${totalTrades} (🟢${buyTrades} buys | 🔴${sellTrades} sells)\n✅ Wins: ${profitableTrades} | ❌ Losses: ${lossTrades}\n🎯 Win Rate: ${winRate}%\n💵 Volume: $${totalVolume.toFixed(2)}\n\n━━━━━━━━━━━━━━━━━━\n⏰ *LAST 24 HOURS*\n${pnl24hEmoji} PNL: ${pnl24hSign}$${Math.abs(pnl24h).toFixed(2)}\n📊 Trades: ${trades24h.length}\n\n━━━━━━━━━━━━━━━━━━\n🪙 *TOP TOKENS*${tokenBreakdown}\n━━━━━━━━━━━━━━━━━━`;
@@ -2025,39 +2102,54 @@ async function checkAllAlerts() {
   for (const [userId, session] of userSessions.entries()) {
     const alerts = session.alerts || [];
     if (!alerts.length) continue;
+    let mutated = false;
     for (let i = 0; i < alerts.length; i++) {
       const alert = alerts[i];
       try {
         const pair = await fetchTokenData(alert.token);
         if (!pair) continue;
         const currentPrice = parseFloat(pair.priceUsd) || 0;
-        let triggered = false;
+        let isMet = false;
         if (alert.type === 'price') {
           if ((alert.direction === 'above' && currentPrice >= alert.threshold) ||
               (alert.direction === 'below' && currentPrice <= alert.threshold)) {
-            triggered = true;
+            isMet = true;
           }
         } else if (alert.type === 'percent') {
           const change24 = pair.priceChange?.h24 || 0;
           if ((alert.direction === 'above' && change24 >= alert.threshold) ||
               (alert.direction === 'below' && change24 <= -alert.threshold)) {
-            triggered = true;
+            isMet = true;
           }
         } else if (alert.type === 'mcap') {
           const mcap = pair.marketCap || pair.fdv || 0;
-          if (mcap >= alert.threshold) triggered = true;
+          if (mcap >= alert.threshold) isMet = true;
         }
-        if (triggered) {
-          const msg = `🔔 *Alert triggered!*\nToken: \`${shortenAddress(alert.token)}\`\nType: ${alert.type}\nCurrent: ${alert.type === 'percent' ? (pair.priceChange?.h24 || 0).toFixed(2) + '%' : alert.type === 'mcap' ? '$' + (pair.marketCap || 0).toLocaleString() : '$' + currentPrice.toFixed(6)}\nTarget: ${alert.threshold}${alert.type === 'percent' ? '%' : alert.type === 'mcap' ? ' MCAP' : ' USD'}`;
+        if (alert.wasMet === undefined) {
+          alert.wasMet = isMet;
+          mutated = true;
+          continue;
+        }
+
+        if (isMet && !alert.wasMet) {
+          const mcapValue = pair.marketCap || pair.fdv || 0;
+          const msg = `🔔 *Alert triggered!*\nToken: \`${shortenAddress(alert.token)}\`\nType: ${alert.type}\nCurrent: ${alert.type === 'percent' ? (pair.priceChange?.h24 || 0).toFixed(2) + '%' : alert.type === 'mcap' ? '$' + mcapValue.toLocaleString() : '$' + currentPrice.toFixed(6)}\nTarget: ${alert.threshold}${alert.type === 'percent' ? '%' : alert.type === 'mcap' ? ' MCAP' : ' USD'}`;
           await bot.telegram.sendMessage(userId, msg, { parse_mode: 'Markdown' });
           session.alerts.splice(i, 1);
           i--;
-          await saveSessions();
+          mutated = true;
+          continue;
+        }
+
+        if (alert.wasMet !== isMet) {
+          alert.wasMet = isMet;
+          mutated = true;
         }
       } catch (err) {
         console.error(`Alert check error for user ${userId}:`, err.message);
       }
     }
+    if (mutated) await saveSessions();
   }
 }
 
@@ -2490,9 +2582,17 @@ You can view and manage all your wallets anytime from the wallet section.`, { pa
       if (token) {
         const alerts = session.alerts || [];
         if (alerts.length >= MAX_ALERTS) return ctx.reply(`❌ Max ${MAX_ALERTS} alerts`);
-        alerts.push({ token, type: 'price', threshold: price, direction: 'above', lastTriggered: null });
+        let direction = 'above';
+        let wasMet = false;
+        const pair = await fetchTokenData(token);
+        const currentPrice = parseFloat(pair?.priceUsd) || 0;
+        if (currentPrice > 0) {
+          direction = price >= currentPrice ? 'above' : 'below';
+          wasMet = direction === 'above' ? currentPrice >= price : currentPrice <= price;
+        }
+        alerts.push({ token, type: 'price', threshold: price, direction, wasMet, lastTriggered: null });
         saveSessions();
-        await ctx.reply(`✅ Alert set: ${shortenAddress(token)} > $${price}`);
+        await ctx.reply(`✅ Alert set: ${shortenAddress(token)} ${direction === 'above' ? '>' : '<'} $${price}`);
       } else await ctx.reply('❌ No token');
     } else await ctx.reply('❌ Invalid price');
     session.pendingPriceAlert = null;
@@ -2507,6 +2607,16 @@ You can view and manage all your wallets anytime from the wallet section.`, { pa
         const alerts = session.alerts || [];
         if (alerts.length >= MAX_ALERTS) return ctx.reply(`❌ Max ${MAX_ALERTS} alerts`);
         const alert = { token, type, threshold: Math.abs(thresh), direction: 'above', lastTriggered: null };
+        if (type === 'price') {
+          const pair = await fetchTokenData(token);
+          const currentPrice = parseFloat(pair?.priceUsd) || 0;
+          if (currentPrice > 0) {
+            alert.direction = alert.threshold >= currentPrice ? 'above' : 'below';
+            alert.wasMet = alert.direction === 'above' ? currentPrice >= alert.threshold : currentPrice <= alert.threshold;
+          } else {
+            alert.wasMet = false;
+          }
+        }
         if (type === 'percent') alert.direction = thresh >= 0 ? 'above' : 'below';
         alerts.push(alert);
         saveSessions();
