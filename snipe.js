@@ -474,6 +474,124 @@ function recordTrade(userId, tradeData) {
   return record;
 }
 
+// ======================= POSITION & PNL ENGINE (from trade history) =======================
+function buildPositions(history) {
+  const positions = {};
+  for (const t of history) {
+    const key = t.tokenAddress;
+    if (!key) continue;
+    if (!positions[key]) {
+      positions[key] = {
+        token: key,
+        symbol: t.tokenSymbol || '???',
+        totalBought: 0,
+        totalSold: 0,
+        spentUsd: 0,
+        receivedUsd: 0,
+        spentSol: 0,
+        receivedSol: 0
+      };
+    }
+    if (t.type === 'BUY') {
+      positions[key].totalBought += t.amountToken || 0;
+      positions[key].spentUsd += t.valueUsd || 0;
+      positions[key].spentSol += t.amountSol || 0;
+    }
+    if (t.type === 'SELL') {
+      positions[key].totalSold += t.amountToken || 0;
+      positions[key].receivedUsd += t.valueUsd || 0;
+      positions[key].receivedSol += t.amountSol || 0;
+    }
+  }
+  return positions;
+}
+
+function computePositionStats(pos, currentPriceUsd, solPrice = 0) {
+  const remainingTokens = pos.totalBought - pos.totalSold;
+  const avgEntryUsd = pos.totalBought > 0 ? pos.spentUsd / pos.totalBought : 0;
+  const openValueUsd = remainingTokens * currentPriceUsd;
+  const totalValueUsd = pos.receivedUsd + openValueUsd;
+  const pnlUsd = totalValueUsd - pos.spentUsd;
+  let pnlPercent = pos.spentUsd ? (pnlUsd / pos.spentUsd) * 100 : 0;
+  if (!isFinite(pnlPercent)) pnlPercent = 0;
+  let openValueSol = 0, totalValueSol = 0, pnlSol = 0;
+  if (solPrice > 0) {
+    openValueSol = openValueUsd / solPrice;
+    totalValueSol = pos.receivedSol + openValueSol;
+    pnlSol = totalValueSol - pos.spentSol;
+  }
+  return {
+    remainingTokens,
+    avgEntryUsd,
+    openValueUsd,
+    totalValueUsd,
+    pnlUsd,
+    pnlPercent,
+    openValueSol,
+    totalValueSol,
+    pnlSol,
+    isClosed: Math.abs(remainingTokens) < 0.000001
+  };
+}
+
+async function calculateTokenPnL(session, tokenAddress, currentPriceUsd, solPrice) {
+  const trades = session.tradeHistory.filter(t => t.tokenAddress === tokenAddress);
+  if (!trades.length) return null;
+  let investedUsd = 0, receivedUsd = 0, totalBought = 0, totalSold = 0, investedSol = 0, receivedSol = 0;
+  for (const t of trades) {
+    if (t.type === 'BUY') {
+      investedUsd += t.valueUsd || 0;
+      totalBought += t.amountToken || 0;
+      investedSol += t.amountSol || 0;
+    }
+    if (t.type === 'SELL') {
+      receivedUsd += t.valueUsd || 0;
+      totalSold += t.amountToken || 0;
+      receivedSol += t.amountSol || 0;
+    }
+  }
+  const remainingTokens = totalBought - totalSold;
+  const currentValueUsd = remainingTokens * currentPriceUsd;
+  const totalValueUsd = receivedUsd + currentValueUsd;
+  const pnlUsd = totalValueUsd - investedUsd;
+  let pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
+  if (!isFinite(pnlPercent)) pnlPercent = 0;
+  const currentValueSol = currentValueUsd / solPrice;
+  const totalValueSol = receivedSol + currentValueSol;
+  const pnlSol = totalValueSol - investedSol;
+  return {
+    investedUsd, receivedUsd, remainingTokens, currentValueUsd, totalValueUsd, pnlUsd, pnlPercent,
+    investedSol, receivedSol, currentValueSol, totalValueSol, pnlSol
+  };
+}
+
+function hasTokenHistory(session, tokenAddress) {
+  return session.tradeHistory.some(t => t.tokenAddress === tokenAddress);
+}
+
+function getHoldingTime(buys) {
+  if (!buys.length) return "N/A";
+  const firstDate = new Date(buys[0].timestamp);
+  const now = new Date();
+  const diffMs = now - firstDate;
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  return `${hours}h`;
+}
+
+function calculateOverallPnL(positions, solPrice) {
+  let totalSpent = 0, totalValueUsd = 0;
+  for (const token in positions) {
+    const pos = positions[token];
+    totalSpent += pos.spentUsd;
+    totalValueUsd += pos.totalValueUsd;
+  }
+  const pnlUsd = totalValueUsd - totalSpent;
+  let pnlPercent = totalSpent ? (pnlUsd / totalSpent) * 100 : 0;
+  if (!isFinite(pnlPercent)) pnlPercent = 0;
+  const totalValueSol = totalValueUsd / solPrice;
+  return { totalSpent, totalValueUsd, totalValueSol, pnlUsd, pnlPercent };
+}
+
 // ======================= PNL IMAGE =======================
 async function generatePnLImage(data) {
   const {
@@ -487,7 +605,6 @@ async function generatePnLImage(data) {
     solanaLogoPath = SOLANA_LOGO
   } = data;
 
-  // ✅ SAFETY: ensure pnlPercent is a valid number
   let safePnlPercent = pnlPercent;
   if (isNaN(safePnlPercent) || !isFinite(safePnlPercent)) safePnlPercent = 0;
 
@@ -615,9 +732,6 @@ bot.action(/^pnl_image_token_(.+)$/, async (ctx) => {
   const wallet = getActiveWallet(session);
   if (!wallet) return ctx.reply('❌ No wallet');
 
-  const tokenBal = await getTokenBalance(wallet.publicKey, token);
-  if (tokenBal.amount <= 0) return ctx.reply('❌ No token balance');
-
   const pair = await fetchTokenData(token);
   if (!pair) return ctx.reply('❌ Could not fetch token price');
   const currentTokenPriceUsd = parseFloat(pair.priceUsd) || 0;
@@ -627,38 +741,28 @@ bot.action(/^pnl_image_token_(.+)$/, async (ctx) => {
   }
 
   const tokenSymbol = pair.baseToken?.symbol || '???';
+  const pnlData = await calculateTokenPnL(session, token, currentTokenPriceUsd, solPrice);
+  if (!pnlData) return ctx.reply('❌ No trading history for this token.');
+
+  const { investedUsd, pnlUsd, pnlPercent, remainingTokens, currentValueUsd, currentValueSol, investedSol, receivedSol } = pnlData;
+  const isClosed = Math.abs(remainingTokens) < 0.000001;
 
   const buys = session.tradeHistory.filter(t => t.tokenAddress === token && t.type === 'BUY');
-  if (!buys.length) return ctx.reply('❌ No buy history for this token');
-
-  let totalSpentSol = 0;
-  for (const t of buys) totalSpentSol += t.amountSol || 0;
-  if (totalSpentSol <= 0) return ctx.reply('❌ Invalid buy data');
-
-  // Correct USD and SOL conversion
-  const currentValueUsd = tokenBal.amount * currentTokenPriceUsd;
-  const currentValueSol = currentValueUsd / solPrice;
-  const investedUsd = totalSpentSol * solPrice;
-  const pnlUsd = currentValueUsd - investedUsd;
-  let pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
-
-  // Safety
-  if (isNaN(pnlPercent) || !isFinite(pnlPercent)) pnlPercent = 0;
-
-  const firstDate = new Date(buys[buys.length-1].timestamp);
-  const diffHours = (Date.now() - firstDate) / (1000*3600);
-  const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
+  const timeStr = getHoldingTime(buys);
 
   const referralCode = getReferralCode(ctx.from.id);
   const botUser = (await bot.telegram.getMe()).username;
   const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+  const label = isClosed ? 'CLOSED' : 'OPEN';
 
   const img = await generatePnLImage({
     pnlPercent,
-    pair: `${tokenSymbol}/SOL`,
+    pair: `${tokenSymbol}/SOL (${label})`,
     time: timeStr,
-    invested: `${totalSpentSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
-    current: `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
+    invested: `${investedSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
+    current: isClosed
+      ? `${receivedSol.toFixed(4)} SOL ($${pnlData.receivedUsd.toFixed(2)})`
+      : `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
     qrData: qr,
     username: ctx.from.username || ctx.from.first_name || 'user'
   });
@@ -672,38 +776,22 @@ bot.action('pnl_image_overall', async (ctx) => {
   const wallet = getActiveWallet(session);
   if (!wallet) return ctx.reply('❌ No wallet');
 
-  let totalSpentSol = 0;
-  let totalReceivedSol = 0;
-  for (const t of history) {
-    if (t.type === 'BUY') totalSpentSol += t.amountSol || 0;
-    else if (t.type === 'SELL') totalReceivedSol += t.amountSol || 0;
-  }
+  if (history.length === 0) return ctx.reply('❌ No trades found.');
 
+  const positionsMap = buildPositions(history);
   const solPrice = await getSolPrice();
   if (solPrice === 0) return ctx.reply('❌ Cannot fetch SOL price.');
 
-  let openValueUsd = 0;
-  const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-    new PublicKey(wallet.publicKey),
-    { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
-  );
-  for (const ta of tokenAccounts.value) {
-    const mint = ta.account.data.parsed.info.mint;
-    const balance = parseFloat(ta.account.data.parsed.info.tokenAmount.uiAmount);
-    if (balance <= 0) continue;
-    const pair = await fetchTokenData(mint);
-    if (pair?.priceUsd) {
-      openValueUsd += balance * parseFloat(pair.priceUsd);
-    }
+  for (const token in positionsMap) {
+    const pair = await fetchTokenData(token);
+    const currentPrice = pair ? parseFloat(pair.priceUsd) : 0;
+    const stats = computePositionStats(positionsMap[token], currentPrice, solPrice);
+    positionsMap[token].totalValueUsd = stats.totalValueUsd;
+    positionsMap[token].openValueUsd = stats.openValueUsd;
   }
 
-  const spentUsd = totalSpentSol * solPrice;
-  const receivedUsd = totalReceivedSol * solPrice;
-  const totalValueUsd = receivedUsd + openValueUsd;
-  const pnlUsd = totalValueUsd - spentUsd;
-  let pnlPercent = spentUsd ? (pnlUsd / spentUsd) * 100 : 0;
-
-  if (isNaN(pnlPercent) || !isFinite(pnlPercent)) pnlPercent = 0;
+  const overall = calculateOverallPnL(positionsMap, solPrice);
+  const { totalSpent, totalValueUsd, totalValueSol, pnlUsd, pnlPercent } = overall;
 
   const firstTradeDate = history.length ? new Date(history[history.length-1].timestamp) : new Date();
   const diffHours = (Date.now() - firstTradeDate) / (1000*3600);
@@ -715,8 +803,8 @@ bot.action('pnl_image_overall', async (ctx) => {
 
   const img = await generatePnLImage({
     pnlPercent, pair: 'PEGASUS/TRADES', time: timeStr,
-    invested: `${totalSpentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
-    current: `${(totalReceivedSol + (openValueUsd / solPrice)).toFixed(4)} SOL ($${totalValueUsd.toFixed(2)})`,
+    invested: `${(totalSpent / solPrice).toFixed(4)} SOL ($${totalSpent.toFixed(2)})`,
+    current: `${totalValueSol.toFixed(4)} SOL ($${totalValueUsd.toFixed(2)})`,
     qrData: qr, username: ctx.from.username || ctx.from.first_name || 'user'
   });
   await ctx.replyWithPhoto({ source: img }, { caption: `📊 Overall PNL: ${pnlPercent>=0?'+':''}${pnlPercent.toFixed(2)}%` });
@@ -1063,105 +1151,76 @@ async function showPositionsMenu(ctx, edit = false) {
     return;
   }
 
-  // Get all token accounts for this wallet
-  const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-    new PublicKey(activeWallet.publicKey),
-    { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
-  );
-  
-  // Build list of tokens with balance > 0
-  const openPositions = [];
-  const solPrice = await getSolPrice();
-  
-  for (const ta of tokenAccounts.value) {
-    const mint = ta.account.data.parsed.info.mint;
-    const balance = parseFloat(ta.account.data.parsed.info.tokenAmount.uiAmount);
-    if (balance <= 0) continue;
-    
-    // Fetch token metadata & price
-    const pair = await fetchTokenData(mint);
-    if (!pair) continue;
-    const currentPriceUsd = parseFloat(pair.priceUsd) || 0;
-    const tokenSymbol = pair.baseToken?.symbol || '???';
-    const mcap = pair.marketCap || pair.fdv || 0;
-    const change24 = pair.priceChange?.h24 || 0;
-    
-    // Get total SOL spent on buys for this token from trade history
-    const buys = session.tradeHistory.filter(t => t.tokenAddress === mint && t.type === 'BUY');
-    let totalSpentSol = 0;
-    for (const b of buys) totalSpentSol += b.amountSol || 0;
-    
-    if (totalSpentSol === 0) continue;
-    
-    const currentValueUsd = balance * currentPriceUsd;
-    const investedUsd = totalSpentSol * solPrice;
-    const pnlUsd = currentValueUsd - investedUsd;
-    const pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
-    
-    // Calculate average buy price in SOL
-    const totalSellTokens = session.tradeHistory.filter(t => t.tokenAddress === mint && t.type === 'SELL').reduce((s,t)=>s+(t.amountToken||0),0);
-    const avgBuyPriceSol = totalSpentSol / (balance + totalSellTokens);
-    
-    openPositions.push({
-      symbol: tokenSymbol,
-      mint,
-      balance,
-      currentPriceUsd,
-      mcap,
-      change24,
-      currentValueUsd,
-      investedUsd,
-      pnlUsd,
-      pnlPercent,
-      avgBuyPriceSol,
-      totalSpentSol
-    });
-  }
-  
-  if (openPositions.length === 0) {
+  const history = session.tradeHistory || [];
+  if (history.length === 0) {
     const message = `📊 *Your Positions*\n\n💼 Wallet: \`${shortenAddress(activeWallet.publicKey)}\`\n\n_No open positions_\n\nPaste a token address to analyze and trade.`;
     const keyboard = Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh', 'refresh_positions')], [Markup.button.callback('« Back', 'back_main')]]);
     if (edit) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
     else await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
     return;
   }
-  
-  // Build message with proper number formatting
+
+  const positionsMap = buildPositions(history);
+  const solPrice = await getSolPrice();
+  const openPositions = [];
+
+  for (const token in positionsMap) {
+    const pos = positionsMap[token];
+    const remaining = pos.totalBought - pos.totalSold;
+    if (Math.abs(remaining) < 0.000001) continue;
+    const pair = await fetchTokenData(token);
+    if (!pair) continue;
+    const currentPriceUsd = parseFloat(pair.priceUsd) || 0;
+    const stats = computePositionStats(pos, currentPriceUsd, solPrice);
+    if (stats.remainingTokens <= 0) continue;
+    openPositions.push({
+      token,
+      symbol: pos.symbol,
+      stats,
+      mcap: pair.marketCap || pair.fdv || 0,
+      change24: pair.priceChange?.h24 || 0,
+      currentPriceUsd
+    });
+  }
+
+  if (openPositions.length === 0) {
+    const message = `📊 *Your Positions*\n\n💼 Wallet: \`${shortenAddress(activeWallet.publicKey)}\`\n\n_No open positions based on trade history._\n\nIf you bought tokens but they don't appear here, check your trade history.`;
+    const keyboard = Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh', 'refresh_positions')], [Markup.button.callback('« Back', 'back_main')]]);
+    if (edit) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    else await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
+    return;
+  }
+
   let message = `📊 *Your Positions*\n💼 Wallet: \`${shortenAddress(activeWallet.publicKey)}\`\n━━━━━━━━━━━━━━━━━━\n`;
   for (const pos of openPositions) {
-    // ✅ Proper number formatting with thousands separators
-    const balanceFormatted = pos.balance.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const valueFormatted = pos.currentValueUsd.toFixed(2);
-    const pnlFormatted = pos.pnlUsd.toFixed(2);
-    const pnlPercentFormatted = pos.pnlPercent.toFixed(2);
-    const avgBuyFormatted = pos.avgBuyPriceSol.toFixed(6);
+    const s = pos.stats;
+    const balanceFormatted = s.remainingTokens.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    const avgBuyFormatted = s.avgEntryUsd / solPrice;
+    const valueFormatted = s.openValueUsd.toFixed(2);
+    const pnlFormatted = s.pnlUsd.toFixed(2);
+    const pnlPercentFormatted = s.pnlPercent.toFixed(2);
     const priceFormatted = pos.currentPriceUsd.toFixed(6);
-    
-    // ✅ Market cap formatting (M for millions, K for thousands)
     const mcapFormatted = pos.mcap >= 1_000_000 ? (pos.mcap / 1_000_000).toFixed(2) + 'M' : (pos.mcap / 1_000).toFixed(2) + 'K';
     const trendEmoji = pos.change24 >= 0 ? '🟢' : '🔴';
-    
-    message += `*${pos.symbol}* (\`${shortenAddress(pos.mint)}\`)\n`;
+
+    message += `*${pos.symbol}* (\`${shortenAddress(pos.token)}\`)\n`;
     message += `💰 *Balance:* ${balanceFormatted} tokens\n`;
-    message += `📈 *Avg Buy:* ${avgBuyFormatted} SOL\n`;
+    message += `📈 *Avg Buy:* ${avgBuyFormatted.toFixed(6)} SOL\n`;
     message += `💵 *Current:* $${priceFormatted}\n`;
     message += `💲 *Value:* $${valueFormatted}\n`;
-    message += `📊 *PNL:* ${pos.pnlUsd >= 0 ? '🟢 +' : '🔴 '}$${pnlFormatted} (${pos.pnlPercent >= 0 ? '+' : ''}${pnlPercentFormatted}%)\n`;
+    message += `📊 *PNL:* ${s.pnlUsd >= 0 ? '🟢 +' : '🔴 '}$${pnlFormatted} (${s.pnlPercent >= 0 ? '+' : ''}${pnlPercentFormatted}%)\n`;
     message += `${trendEmoji} *24h:* ${pos.change24 >= 0 ? '+' : ''}${pos.change24.toFixed(2)}%\n`;
     message += `🏦 *Market Cap:* $${mcapFormatted}\n`;
     message += `━━━━━━━━━━━━━━━━━━\n`;
   }
-  
-  const keyboardButtons = [];
-  for (const pos of openPositions) {
-    keyboardButtons.push([
-      Markup.button.callback(`📸 PnL Image (${pos.symbol})`, `pnl_image_token_${pos.mint}`),
-      Markup.button.callback(`💸 Sell ${pos.symbol}`, `menu_sell`),
-    ]);
-  }
+
+  const keyboardButtons = openPositions.map(pos => [
+    Markup.button.callback(`📸 PnL Image (${pos.symbol})`, `pnl_image_token_${pos.token}`),
+    Markup.button.callback(`💸 Sell ${pos.symbol}`, `menu_sell`),
+  ]);
   keyboardButtons.push([Markup.button.callback('🔄 Refresh', 'refresh_positions')]);
   keyboardButtons.push([Markup.button.callback('« Back', 'back_main')]);
-  
+
   const keyboard = Markup.inlineKeyboard(keyboardButtons);
   if (edit) await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
   else await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
@@ -1960,149 +2019,52 @@ bot.action(/^limit_buy_(.+)$/, async (ctx) => { const token = ctx.match[1]; cons
 bot.action(/^limit_sell_(.+)$/, async (ctx) => { const token = ctx.match[1]; const session = getSession(ctx.from.id); session.state = 'AWAITING_LIMIT_SELL_DETAILS'; session.pendingLimitOrder = { type: 'sell', token }; await ctx.editMessageText(`Enter: [price] [percentage]\nExample: 0.01 50`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', `limit_order_${token}`)]]) }); });
 bot.action(/^dca_(.+)$/, async (ctx) => { const token = ctx.match[1]; const session = getSession(ctx.from.id); session.state = 'AWAITING_DCA_DETAILS'; session.pendingDCA = { token }; await ctx.editMessageText(`Enter: [amount_sol] [interval_minutes] [num_orders]\nExample: 0.1 60 5`, { ...Markup.inlineKeyboard([[Markup.button.callback('Cancel', `refresh_${token}`)]]) }); });
 
+// ======================= ALERT ENGINE =======================
+async function checkAllAlerts() {
+  console.log('🔔 Checking alerts...');
+  for (const [userId, session] of userSessions.entries()) {
+    const alerts = session.alerts || [];
+    if (!alerts.length) continue;
+    for (let i = 0; i < alerts.length; i++) {
+      const alert = alerts[i];
+      try {
+        const pair = await fetchTokenData(alert.token);
+        if (!pair) continue;
+        const currentPrice = parseFloat(pair.priceUsd) || 0;
+        let triggered = false;
+        if (alert.type === 'price') {
+          if ((alert.direction === 'above' && currentPrice >= alert.threshold) ||
+              (alert.direction === 'below' && currentPrice <= alert.threshold)) {
+            triggered = true;
+          }
+        } else if (alert.type === 'percent') {
+          const change24 = pair.priceChange?.h24 || 0;
+          if ((alert.direction === 'above' && change24 >= alert.threshold) ||
+              (alert.direction === 'below' && change24 <= -alert.threshold)) {
+            triggered = true;
+          }
+        } else if (alert.type === 'mcap') {
+          const mcap = pair.marketCap || pair.fdv || 0;
+          if (mcap >= alert.threshold) triggered = true;
+        }
+        if (triggered) {
+          const msg = `🔔 *Alert triggered!*\nToken: \`${shortenAddress(alert.token)}\`\nType: ${alert.type}\nCurrent: ${alert.type === 'percent' ? (pair.priceChange?.h24 || 0).toFixed(2) + '%' : alert.type === 'mcap' ? '$' + (pair.marketCap || 0).toLocaleString() : '$' + currentPrice.toFixed(6)}\nTarget: ${alert.threshold}${alert.type === 'percent' ? '%' : alert.type === 'mcap' ? ' MCAP' : ' USD'}`;
+          await bot.telegram.sendMessage(userId, msg, { parse_mode: 'Markdown' });
+          session.alerts.splice(i, 1);
+          i--;
+          await saveSessions();
+        }
+      } catch (err) {
+        console.error(`Alert check error for user ${userId}:`, err.message);
+      }
+    }
+  }
+}
+
 // ======================= BACKGROUND MONITORING =======================
-const ALERT_CHECK_INTERVAL = 60000;
-async function checkAlerts() {
-  console.log('🔄 Checking alerts...');
-  const allTokens = new Set();
-  for (const sess of userSessions.values()) {
-    for (const a of (sess.alerts || [])) {
-      allTokens.add(a.token);
-    }
-  }
-  if (!allTokens.size) {
-    console.log('No alerts to check.');
-    return;
-  }
-  console.log(`Found ${allTokens.size} tokens with alerts`);
-
-  const dataMap = new Map();
-  for (const addr of allTokens) {
-    console.log(`Fetching data for ${addr}...`);
-    const pair = await fetchTokenData(addr);
-    if (pair) {
-      const price = parseFloat(pair.priceUsd) || 0;
-      const mcap = pair.marketCap || pair.fdv || 0;
-      const change24 = pair.priceChange?.h24 || 0;
-      dataMap.set(addr, { price, mcap, change24 });
-      console.log(`✅ ${addr}: price=${price}, mcap=${mcap}, change24=${change24}`);
-    } else {
-      console.log(`❌ No data for ${addr}`);
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-
-  for (const [uid, sess] of userSessions.entries()) {
-    for (const a of (sess.alerts || [])) {
-      const cur = dataMap.get(a.token);
-      if (!cur) {
-        console.log(`Skipping alert for ${a.token} – no data`);
-        continue;
-      }
-
-      let trigger = false, curVal = 0;
-      if (a.type === 'price') {
-        curVal = cur.price;
-        trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= a.threshold);
-        console.log(`Price alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, dir=${a.direction}, trigger=${trigger}`);
-      } else if (a.type === 'percent') {
-        curVal = cur.change24;
-        trigger = (a.direction === 'above' && curVal >= a.threshold) || (a.direction === 'below' && curVal <= -a.threshold);
-        console.log(`% alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, dir=${a.direction}, trigger=${trigger}`);
-      } else if (a.type === 'mcap') {
-        curVal = cur.mcap;
-        trigger = curVal >= a.threshold;
-        console.log(`MCap alert ${a.token}: cur=${curVal}, threshold=${a.threshold}, trigger=${trigger}`);
-      }
-
-      if (trigger) {
-        const now = Date.now();
-        if (a.lastTriggered && (now - a.lastTriggered) < 15 * 60 * 1000) {
-          const changePct = Math.abs(curVal - (a.lastVal || 0)) / (a.lastVal || 1);
-          if (changePct < 0.2) {
-            console.log(`⏸️ Cooldown active for ${a.token} – skipping`);
-            continue;
-          }
-        }
-        a.lastTriggered = now;
-        a.lastVal = curVal;
-        saveSessions();
-
-        const msg = `🔔 *Alert!* Token \`${shortenAddress(a.token)}\`\n${a.type} ${a.direction === 'above' ? '>' : '<'} ${a.threshold} → current: ${a.type === 'percent' ? curVal.toFixed(2) + '%' : a.type === 'mcap' ? '$' + curVal.toLocaleString() : '$' + curVal.toFixed(6)}`;
-        try {
-          await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
-          console.log(`✅ Alert sent to ${uid} for ${a.token}`);
-        } catch (err) {
-          console.error(`Failed to send alert to ${uid}:`, err.message);
-        }
-      }
-    }
-  }
-}
-
-async function checkTrackedTokens() {
-  console.log('🔄 Checking tracked tokens...');
-  const tokenMap = new Map();
-  for (const [uid, sess] of userSessions.entries()) {
-    for (const t of (sess.trackedTokens || [])) {
-      if (!tokenMap.has(t.address)) tokenMap.set(t.address, []);
-      tokenMap.get(t.address).push({ uid, t });
-    }
-  }
-  if (!tokenMap.size) {
-    console.log('No tracked tokens.');
-    return;
-  }
-  console.log(`Found ${tokenMap.size} tracked tokens`);
-
-  for (const [addr, users] of tokenMap.entries()) {
-    console.log(`Fetching data for ${addr}...`);
-    const pair = await fetchTokenData(addr);
-    if (!pair) {
-      console.log(`❌ No data for ${addr}`);
-      continue;
-    }
-    const price = parseFloat(pair.priceUsd) || 0;
-    console.log(`Current price of ${addr}: ${price}`);
-
-    for (const { uid, t } of users) {
-      if (!t.trackedPrice || t.trackedPrice <= 0) continue;
-      const ratio = price / t.trackedPrice;
-      console.log(`User ${uid}: trackedPrice=${t.trackedPrice}, ratio=${ratio}`);
-      const now = Date.now();
-
-      if (ratio >= 2) {
-        const multiplier = Math.floor(ratio);
-        if (!t.lastNotifiedMultiplier || multiplier > t.lastNotifiedMultiplier) {
-          t.lastNotifiedMultiplier = multiplier;
-          const msg = `🚀 *${multiplier}x Alert!* ${shortenAddress(addr)} has increased ${multiplier}x since you tracked it.\nPrice: $${price.toFixed(6)} (tracked $${t.trackedPrice.toFixed(6)})`;
-          try {
-            await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
-            console.log(`✅ ${multiplier}x alert sent to ${uid} for ${addr}`);
-          } catch (err) {
-            console.error(`Failed to send alert to ${uid}:`, err.message);
-          }
-          saveSessions();
-        }
-      }
-
-      if (ratio <= 0.5) {
-        const divisor = Math.floor(1 / ratio);
-        if (!t.lastNotifiedDivisor || divisor > t.lastNotifiedDivisor) {
-          t.lastNotifiedDivisor = divisor;
-          const msg = `🔻 *${divisor}x Down Alert!* ${shortenAddress(addr)} has dropped to 1/${divisor} of tracked price.\nPrice: $${price.toFixed(6)} (tracked $${t.trackedPrice.toFixed(6)})`;
-          try {
-            await bot.telegram.sendMessage(uid, msg, { parse_mode: 'Markdown' });
-            console.log(`✅ ${divisor}x down alert sent to ${uid} for ${addr}`);
-          } catch (err) {
-            console.error(`Failed to send alert to ${uid}:`, err.message);
-          }
-          saveSessions();
-        }
-      }
-    }
-  }
-}
+setInterval(() => {
+  checkAllAlerts().catch(console.error);
+}, 30000);
 
 // ======================= COMMANDS =======================
 bot.command('start', async (ctx) => { await showMainMenu(ctx); });
@@ -2250,15 +2212,13 @@ async function sendClosedTokenPnLImage(ctx, tokenAddress) {
     return ctx.reply('❌ No buy history found for this token.');
   }
 
-  let totalSpentSol = 0;
-  let totalBoughtTokens = 0;
+  let totalSpentSol = 0, totalBoughtTokens = 0;
   for (const t of buys) {
     totalSpentSol += t.amountSol || 0;
     totalBoughtTokens += t.amountToken || 0;
   }
 
-  let totalReceivedSol = 0;
-  let totalSoldTokens = 0;
+  let totalReceivedSol = 0, totalSoldTokens = 0;
   for (const t of sells) {
     totalReceivedSol += t.amountSol || 0;
     totalSoldTokens += t.amountToken || 0;
@@ -2312,41 +2272,22 @@ async function sendOverallPnLImage(ctx) {
   const wallet = getActiveWallet(session);
   if (!wallet) return ctx.reply('❌ No wallet connected.');
 
-  // Realized SOL flow
-  let totalSpentSol = 0;
-  let totalReceivedSol = 0;
-  for (const t of history) {
-    if (t.type === 'BUY') totalSpentSol += t.amountSol || 0;
-    else if (t.type === 'SELL') totalReceivedSol += t.amountSol || 0;
-  }
+  if (history.length === 0) return ctx.reply('❌ No trades found.');
 
+  const positionsMap = buildPositions(history);
   const solPrice = await getSolPrice();
   if (solPrice === 0) return ctx.reply('❌ Cannot fetch SOL price.');
 
-  // Unrealized value from open positions (tokens still held)
-  let openValueUsd = 0;
-  const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-    new PublicKey(wallet.publicKey),
-    { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
-  );
-  for (const ta of tokenAccounts.value) {
-    const mint = ta.account.data.parsed.info.mint;
-    const balance = parseFloat(ta.account.data.parsed.info.tokenAmount.uiAmount);
-    if (balance <= 0) continue;
-    const pair = await fetchTokenData(mint);
-    if (pair?.priceUsd) {
-      openValueUsd += balance * parseFloat(pair.priceUsd);
-    }
+  for (const token in positionsMap) {
+    const pair = await fetchTokenData(token);
+    const currentPrice = pair ? parseFloat(pair.priceUsd) : 0;
+    const stats = computePositionStats(positionsMap[token], currentPrice, solPrice);
+    positionsMap[token].totalValueUsd = stats.totalValueUsd;
+    positionsMap[token].openValueUsd = stats.openValueUsd;
   }
 
-  const spentUsd = totalSpentSol * solPrice;
-  const receivedUsd = totalReceivedSol * solPrice;
-  const totalValueUsd = receivedUsd + openValueUsd;
-  const pnlUsd = totalValueUsd - spentUsd;
-  let pnlPercent = spentUsd ? (pnlUsd / spentUsd) * 100 : 0;
-
-  // Safety
-  if (isNaN(pnlPercent) || !isFinite(pnlPercent)) pnlPercent = 0;
+  const overall = calculateOverallPnL(positionsMap, solPrice);
+  const { totalSpent, totalValueUsd, totalValueSol, pnlUsd, pnlPercent } = overall;
 
   const firstTradeDate = history.length ? new Date(history[history.length-1].timestamp) : new Date();
   const diffHours = (Date.now() - firstTradeDate) / (1000*3600);
@@ -2361,8 +2302,8 @@ async function sendOverallPnLImage(ctx) {
       pnlPercent,
       pair: 'PEGASUS/TRADES',
       time: timeStr,
-      invested: `${totalSpentSol.toFixed(4)} SOL ($${spentUsd.toFixed(2)})`,
-      current: `${(totalReceivedSol + (openValueUsd / solPrice)).toFixed(4)} SOL ($${totalValueUsd.toFixed(2)})`,
+      invested: `${(totalSpent / solPrice).toFixed(4)} SOL ($${totalSpent.toFixed(2)})`,
+      current: `${totalValueSol.toFixed(4)} SOL ($${totalValueUsd.toFixed(2)})`,
       qrData: qr,
       username: ctx.from.username || ctx.from.first_name || 'user'
     });
@@ -2378,11 +2319,6 @@ async function sendTokenPnLImage(ctx, tokenAddress) {
   const wallet = getActiveWallet(session);
   if (!wallet) return ctx.reply('❌ No wallet connected.');
 
-  const tokenBal = await getTokenBalance(wallet.publicKey, tokenAddress);
-  if (tokenBal.amount <= 0) {
-    return ctx.reply('❌ You have no balance of this token.');
-  }
-
   const pair = await fetchTokenData(tokenAddress);
   if (!pair) return ctx.reply('❌ Could not fetch token price.');
   const currentTokenPriceUsd = parseFloat(pair.priceUsd) || 0;
@@ -2392,39 +2328,29 @@ async function sendTokenPnLImage(ctx, tokenAddress) {
   }
 
   const tokenSymbol = pair.baseToken?.symbol || '???';
+  const pnlData = await calculateTokenPnL(session, tokenAddress, currentTokenPriceUsd, solPrice);
+  if (!pnlData) return ctx.reply('❌ No trading history for this token.');
+
+  const { investedUsd, pnlUsd, pnlPercent, remainingTokens, currentValueUsd, currentValueSol, investedSol, receivedSol } = pnlData;
+  const isClosed = Math.abs(remainingTokens) < 0.000001;
 
   const buys = session.tradeHistory.filter(t => t.tokenAddress === tokenAddress && t.type === 'BUY');
-  if (!buys.length) return ctx.reply('❌ No buy history for this token.');
-
-  let totalSpentSol = 0;
-  for (const t of buys) totalSpentSol += t.amountSol || 0;
-  if (totalSpentSol <= 0) return ctx.reply('❌ Invalid buy data (missing SOL amount).');
-
-  // Correct USD and SOL conversion
-  const currentValueUsd = tokenBal.amount * currentTokenPriceUsd;
-  const currentValueSol = currentValueUsd / solPrice;
-  const investedUsd = totalSpentSol * solPrice;
-  const pnlUsd = currentValueUsd - investedUsd;
-  let pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
-
-  // Safety
-  if (isNaN(pnlPercent) || !isFinite(pnlPercent)) pnlPercent = 0;
-
-  const firstDate = new Date(buys[buys.length-1].timestamp);
-  const diffHours = (Date.now() - firstDate) / (1000*3600);
-  const timeStr = diffHours < 24 ? `${diffHours.toFixed(1)}h` : `${(diffHours/24).toFixed(1)}d`;
+  const timeStr = getHoldingTime(buys);
 
   const referralCode = getReferralCode(ctx.from.id);
   const botUser = (await bot.telegram.getMe()).username;
   const qr = `https://t.me/${botUser}?start=ref_${referralCode}`;
+  const label = isClosed ? 'CLOSED' : 'OPEN';
 
   try {
     const img = await generatePnLImage({
       pnlPercent,
-      pair: `${tokenSymbol}/SOL`,
+      pair: `${tokenSymbol}/SOL (${label})`,
       time: timeStr,
-      invested: `${totalSpentSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
-      current: `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
+      invested: `${investedSol.toFixed(4)} SOL ($${investedUsd.toFixed(2)})`,
+      current: isClosed
+        ? `${receivedSol.toFixed(4)} SOL ($${pnlData.receivedUsd.toFixed(2)})`
+        : `${currentValueSol.toFixed(4)} SOL ($${currentValueUsd.toFixed(2)})`,
       qrData: qr,
       username: ctx.from.username || ctx.from.first_name || 'user'
     });
@@ -2973,7 +2899,6 @@ async function sendTokenAnalysis(ctx, address) {
 async function startBot() {
   await loadSessions();
   await bot.launch();
-  setInterval(() => { checkAlerts(); checkTrackedTokens(); }, ALERT_CHECK_INTERVAL);
   console.log('🚀 Pegasus Trading Bot running');
 }
 startBot().catch(console.error);
