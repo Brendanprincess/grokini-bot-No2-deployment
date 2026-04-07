@@ -185,6 +185,93 @@ function resolveTradeTokenAmount(trade) {
   return 0;
 }
 
+function normalizeTradeRecord(tradeData) {
+  const trade = { ...tradeData };
+  const valueUsd = Number(trade.valueUsd ?? trade.amountUsd) || 0;
+  const priceUsd = Number(trade.priceUsd) || 0;
+  const amountToken = Number(trade.amountToken) || 0;
+
+  trade.valueUsd = valueUsd;
+  trade.amountUsd = valueUsd;
+
+  if (valueUsd > 0 && priceUsd > 0) {
+    const inferredQty = valueUsd / priceUsd;
+    if (!Number.isFinite(amountToken) || amountToken <= 0) {
+      trade.amountToken = inferredQty;
+    } else {
+      const impliedValue = amountToken * priceUsd;
+      const ratio = impliedValue / valueUsd;
+      if (!Number.isFinite(ratio) || ratio > 50 || ratio < 0.02) {
+        trade.amountToken = inferredQty;
+      }
+    }
+  }
+
+  return trade;
+}
+
+function recomputeTradePnL(tradeHistory) {
+  const normalized = (tradeHistory || []).map(normalizeTradeRecord);
+  const tokenState = new Map();
+
+  const byTime = [...normalized].sort((a, b) => {
+    const ta = new Date(a.timestamp || 0).getTime();
+    const tb = new Date(b.timestamp || 0).getTime();
+    return ta - tb;
+  });
+
+  for (const trade of byTime) {
+    const token = trade.tokenAddress;
+    if (!token) continue;
+    if (!tokenState.has(token)) tokenState.set(token, { qty: 0, costUsd: 0 });
+    const state = tokenState.get(token);
+
+    const valueUsd = Number(trade.valueUsd) || 0;
+    const qty = resolveTradeTokenAmount(trade);
+
+    if (trade.type === 'BUY') {
+      trade.pnlUsd = 0;
+      if (qty > 0 && valueUsd > 0) {
+        state.qty += qty;
+        state.costUsd += valueUsd;
+      }
+      continue;
+    }
+
+    if (trade.type === 'SELL') {
+      if (!(qty > 0) || !(valueUsd > 0)) {
+        trade.pnlUsd = 0;
+        continue;
+      }
+
+      const sellQty = state.qty > 0 ? Math.min(qty, state.qty) : qty;
+      const proceedsUsd = sellQty === qty ? valueUsd : (valueUsd * (sellQty / qty));
+      const avgCost = state.qty > 0 ? (state.costUsd / state.qty) : 0;
+      const costBasis = sellQty * avgCost;
+      const pnl = proceedsUsd - costBasis;
+
+      trade.pnlUsd = pnl;
+
+      if (state.qty > 0) {
+        state.qty = Math.max(0, state.qty - sellQty);
+        state.costUsd = Math.max(0, state.costUsd - costBasis);
+      }
+    }
+  }
+
+  const today = new Date().toDateString();
+  const todaysTrades = normalized.filter(t => t?.date === today);
+  const dailyStats = {
+    date: today,
+    totalTrades: todaysTrades.length,
+    profitableTrades: todaysTrades.filter(t => (t.pnlUsd || 0) > 0).length,
+    lossTrades: todaysTrades.filter(t => (t.pnlUsd || 0) < 0).length,
+    totalPnl: todaysTrades.reduce((sum, t) => sum + (t.pnlUsd || 0), 0)
+  };
+
+  return { tradeHistory: normalized, dailyStats };
+}
+
 // ======================= DEBUG LOGGING =======================
 bot.use(async (ctx, next) => {
   console.log('Update:', ctx.updateType);
@@ -214,7 +301,12 @@ function deserializeSession(data) {
     }
     return null;
   }).filter(w => w !== null);
-  return session;
+  if (Array.isArray(session.tradeHistory)) {
+    const recomputed = recomputeTradePnL(session.tradeHistory);
+    session.tradeHistory = recomputed.tradeHistory;
+    session.dailyStats = recomputed.dailyStats;
+  }
+  return { session, mutated: true };
 }
 
 async function ensureDirectoryExists(filePath) {
@@ -231,13 +323,21 @@ async function loadSessions() {
     await ensureDirectoryExists(SESSIONS_FILE);
     const data = await fs.readFile(SESSIONS_FILE, 'utf-8');
     const obj = JSON.parse(data);
+    let mutatedAny = false;
     for (const [uid, sd] of Object.entries(obj)) {
-      userSessions.set(parseInt(uid), deserializeSession(sd));
+      const result = deserializeSession(sd);
+      if (result?.session) {
+        userSessions.set(parseInt(uid), result.session);
+        if (result.mutated) mutatedAny = true;
+      } else {
+        userSessions.set(parseInt(uid), result);
+      }
     }
     for (const [uid, sess] of userSessions.entries()) {
       if (sess.referralCode) referralCodes.set(sess.referralCode, uid);
     }
     console.log(`✅ Loaded ${userSessions.size} sessions`);
+    if (mutatedAny) await saveSessions();
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('Load sessions error:', err);
     else console.log('No existing sessions file, starting fresh.');
@@ -501,12 +601,13 @@ function formatTokenPrice(price) {
 // ======================= RECORD TRADE =======================
 function recordTrade(userId, tradeData) {
   const session = getSession(userId);
+  const normalizedTrade = normalizeTradeRecord(tradeData);
   const record = {
     id: Date.now().toString(36) + Math.random().toString(36).substr(2),
     timestamp: new Date().toISOString(),
     date: new Date().toDateString(),
     time: new Date().toLocaleTimeString(),
-    ...tradeData
+    ...normalizedTrade
   };
   session.tradeHistory.unshift(record);
   if (session.tradeHistory.length > 100) session.tradeHistory = session.tradeHistory.slice(0, 100);
@@ -534,31 +635,65 @@ function buildPositions(history) {
         spentUsd: 0,
         receivedUsd: 0,
         spentSol: 0,
-        receivedSol: 0
+        receivedSol: 0,
+        remainingTokens: 0,
+        remainingCostUsd: 0,
+        realizedPnlUsd: 0,
+        volumeUsd: 0
       };
     }
     if (t.type === 'BUY') {
-      positions[key].totalBought += t.amountToken || 0;
-      positions[key].spentUsd += t.valueUsd || 0;
+      const qty = resolveTradeTokenAmount(t);
+      const costUsd = Number(t.valueUsd) || 0;
+      positions[key].totalBought += qty;
+      positions[key].spentUsd += costUsd;
       positions[key].spentSol += t.amountSol || 0;
+      positions[key].remainingTokens += qty;
+      positions[key].remainingCostUsd += costUsd;
+      positions[key].volumeUsd += costUsd;
     }
     if (t.type === 'SELL') {
-      positions[key].totalSold += t.amountToken || 0;
-      positions[key].receivedUsd += t.valueUsd || 0;
+      const qty = resolveTradeTokenAmount(t);
+      const proceedsUsd = Number(t.valueUsd) || 0;
+      positions[key].totalSold += qty;
+      positions[key].receivedUsd += proceedsUsd;
       positions[key].receivedSol += t.amountSol || 0;
+      positions[key].volumeUsd += proceedsUsd;
+
+      const remainingTokens = positions[key].remainingTokens;
+      const remainingCostUsd = positions[key].remainingCostUsd;
+      if (remainingTokens > 0 && remainingCostUsd > 0 && qty > 0) {
+        const sellQty = Math.min(qty, remainingTokens);
+        const avgCostUsd = remainingCostUsd / remainingTokens;
+        const costBasisUsd = sellQty * avgCostUsd;
+        const proceedsEffectiveUsd = proceedsUsd * (sellQty / qty);
+        positions[key].realizedPnlUsd += proceedsEffectiveUsd - costBasisUsd;
+        positions[key].remainingTokens = Math.max(0, remainingTokens - sellQty);
+        positions[key].remainingCostUsd = Math.max(0, remainingCostUsd - costBasisUsd);
+      }
     }
   }
   return positions;
 }
 
 function computePositionStats(pos, currentPriceUsd, solPrice = 0) {
-  const remainingTokens = pos.totalBought - pos.totalSold;
+  const remainingTokens = Number.isFinite(pos.remainingTokens) ? pos.remainingTokens : (pos.totalBought - pos.totalSold);
   const avgEntryUsd = pos.totalBought > 0 ? pos.spentUsd / pos.totalBought : 0;
   const openValueUsd = remainingTokens * currentPriceUsd;
+  const openCostUsd = Number.isFinite(pos.remainingCostUsd)
+    ? pos.remainingCostUsd
+    : (remainingTokens * avgEntryUsd);
+  const avgEntryOpenUsd = remainingTokens > 0 ? (openCostUsd / remainingTokens) : 0;
+  const unrealizedPnlUsd = openValueUsd - openCostUsd;
+  let unrealizedPnlPercent = openCostUsd ? (unrealizedPnlUsd / openCostUsd) * 100 : 0;
+  if (!isFinite(unrealizedPnlPercent)) unrealizedPnlPercent = 0;
   const totalValueUsd = pos.receivedUsd + openValueUsd;
-  const pnlUsd = totalValueUsd - pos.spentUsd;
-  let pnlPercent = pos.spentUsd ? (pnlUsd / pos.spentUsd) * 100 : 0;
-  if (!isFinite(pnlPercent)) pnlPercent = 0;
+  const realizedPnlUsd = Number.isFinite(pos.realizedPnlUsd)
+    ? pos.realizedPnlUsd
+    : (pos.receivedUsd - (pos.spentUsd - openCostUsd));
+  const totalPnlUsd = realizedPnlUsd + unrealizedPnlUsd;
+  let totalPnlPercent = pos.spentUsd ? (totalPnlUsd / pos.spentUsd) * 100 : 0;
+  if (!isFinite(totalPnlPercent)) totalPnlPercent = 0;
   let openValueSol = 0, totalValueSol = 0, pnlSol = 0;
   if (solPrice > 0) {
     openValueSol = openValueUsd / solPrice;
@@ -568,10 +703,15 @@ function computePositionStats(pos, currentPriceUsd, solPrice = 0) {
   return {
     remainingTokens,
     avgEntryUsd,
+    avgEntryOpenUsd,
+    openCostUsd,
     openValueUsd,
     totalValueUsd,
-    pnlUsd,
-    pnlPercent,
+    unrealizedPnlUsd,
+    unrealizedPnlPercent,
+    realizedPnlUsd,
+    totalPnlUsd,
+    totalPnlPercent,
     openValueSol,
     totalValueSol,
     pnlSol,
@@ -582,31 +722,30 @@ function computePositionStats(pos, currentPriceUsd, solPrice = 0) {
 async function calculateTokenPnL(session, tokenAddress, currentPriceUsd, solPrice) {
   const trades = session.tradeHistory.filter(t => t.tokenAddress === tokenAddress);
   if (!trades.length) return null;
-  let investedUsd = 0, receivedUsd = 0, totalBought = 0, totalSold = 0, investedSol = 0, receivedSol = 0;
-  for (const t of trades) {
-    if (t.type === 'BUY') {
-      investedUsd += t.valueUsd || 0;
-      totalBought += t.amountToken || 0;
-      investedSol += t.amountSol || 0;
-    }
-    if (t.type === 'SELL') {
-      receivedUsd += t.valueUsd || 0;
-      totalSold += t.amountToken || 0;
-      receivedSol += t.amountSol || 0;
-    }
-  }
-  const remainingTokens = totalBought - totalSold;
-  const currentValueUsd = remainingTokens * currentPriceUsd;
-  const totalValueUsd = receivedUsd + currentValueUsd;
-  const pnlUsd = totalValueUsd - investedUsd;
-  let pnlPercent = investedUsd ? (pnlUsd / investedUsd) * 100 : 0;
+  const map = buildPositions(trades);
+  const pos = map[tokenAddress];
+  if (!pos) return null;
+  const stats = computePositionStats(pos, currentPriceUsd, solPrice);
+  let pnlPercent = pos.spentUsd ? (stats.totalPnlUsd / pos.spentUsd) * 100 : 0;
   if (!isFinite(pnlPercent)) pnlPercent = 0;
-  const currentValueSol = currentValueUsd / solPrice;
-  const totalValueSol = receivedSol + currentValueSol;
-  const pnlSol = totalValueSol - investedSol;
+  const currentValueUsd = stats.openValueUsd;
+  const currentValueSol = solPrice > 0 ? (currentValueUsd / solPrice) : 0;
+  const totalValueSol = pos.receivedSol + currentValueSol;
+  const pnlSol = totalValueSol - pos.spentSol;
   return {
-    investedUsd, receivedUsd, remainingTokens, currentValueUsd, totalValueUsd, pnlUsd, pnlPercent,
-    investedSol, receivedSol, currentValueSol, totalValueSol, pnlSol
+    investedUsd: pos.spentUsd,
+    receivedUsd: pos.receivedUsd,
+    remainingTokens: stats.remainingTokens,
+    openCostUsd: stats.openCostUsd,
+    currentValueUsd,
+    totalValueUsd: stats.totalValueUsd,
+    pnlUsd: stats.totalPnlUsd,
+    pnlPercent,
+    investedSol: pos.spentSol,
+    receivedSol: pos.receivedSol,
+    currentValueSol,
+    totalValueSol,
+    pnlSol
   };
 }
 
@@ -1241,10 +1380,10 @@ async function showPositionsMenu(ctx, edit = false) {
   for (const pos of openPositions) {
     const s = pos.stats;
     const balanceFormatted = s.remainingTokens.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const avgBuyFormatted = s.avgEntryUsd / solPrice;
+    const avgBuyFormatted = solPrice > 0 ? (s.avgEntryOpenUsd / solPrice) : 0;
     const valueFormatted = s.openValueUsd.toFixed(2);
-    const pnlFormatted = s.pnlUsd.toFixed(2);
-    const pnlPercentFormatted = s.pnlPercent.toFixed(2);
+    const pnlFormatted = s.unrealizedPnlUsd.toFixed(2);
+    const pnlPercentFormatted = s.unrealizedPnlPercent.toFixed(2);
     const priceFormatted = pos.currentPriceUsd.toFixed(6);
     const mcapFormatted = pos.mcap >= 1_000_000 ? (pos.mcap / 1_000_000).toFixed(2) + 'M' : (pos.mcap / 1_000).toFixed(2) + 'K';
     const trendEmoji = pos.change24 >= 0 ? '🟢' : '🔴';
@@ -1254,7 +1393,7 @@ async function showPositionsMenu(ctx, edit = false) {
     message += `📈 *Avg Buy:* ${avgBuyFormatted.toFixed(6)} SOL\n`;
     message += `💵 *Current:* $${priceFormatted}\n`;
     message += `💲 *Value:* $${valueFormatted}\n`;
-    message += `📊 *PNL:* ${s.pnlUsd >= 0 ? '🟢 +' : '🔴 '}$${pnlFormatted} (${s.pnlPercent >= 0 ? '+' : ''}${pnlPercentFormatted}%)\n`;
+    message += `📊 *PNL:* ${s.unrealizedPnlUsd >= 0 ? '🟢 +' : '🔴 '}$${pnlFormatted} (${s.unrealizedPnlPercent >= 0 ? '+' : ''}${pnlPercentFormatted}%)\n`;
     message += `${trendEmoji} *24h:* ${pos.change24 >= 0 ? '+' : ''}${pos.change24.toFixed(2)}%\n`;
     message += `🏦 *Market Cap:* $${mcapFormatted}\n`;
     message += `━━━━━━━━━━━━━━━━━━\n`;
@@ -1397,13 +1536,26 @@ async function showPNLReport(ctx, edit = false) {
     const winRate = closedTrades > 0 ? ((profitableTrades / closedTrades) * 100).toFixed(1) : 0;
     const totalEmoji = totalPnl >= 0 ? '🟢' : '🔴';
     const totalSign = totalPnl >= 0 ? '+' : '';
+
+    const positions = buildPositions(history);
+    let openPnl = 0;
+    for (const token in positions) {
+      const pos = positions[token];
+      if ((pos.remainingTokens || 0) <= 0) continue;
+      const pair = await fetchTokenData(token);
+      const currentPriceUsd = parseFloat(pair?.priceUsd) || 0;
+      if (!currentPriceUsd) continue;
+      openPnl += (pos.remainingTokens * currentPriceUsd) - (pos.remainingCostUsd || 0);
+    }
+    const openEmoji = openPnl >= 0 ? '🟣' : '🟠';
+    const openSign = openPnl >= 0 ? '+' : '';
     let tokenBreakdown = '';
     const sortedTokens = Object.values(tokenStats).sort((a, b) => (b.volume || 0) - (a.volume || 0)).slice(0, 5);
     sortedTokens.forEach(token => { const pnlEmoji = token.pnl >= 0 ? '🟢' : '🔴'; const pnlSign = token.pnl >= 0 ? '+' : ''; tokenBreakdown += `\n${pnlEmoji} *${token.symbol}*\n   🟢 ${token.buys} buys | 🔴 ${token.sells} sells\n   💰 $${(token.volume || 0).toFixed(2)}\n   📊 PNL: ${pnlSign}$${Math.abs(token.pnl).toFixed(2)}`; });
     const trades24h = history.filter(t => new Date(t.timestamp) >= last24Hours);
     const pnl24hEmoji = pnl24h >= 0 ? '🟢' : '🔴';
     const pnl24hSign = pnl24h >= 0 ? '+' : '';
-    const message = `📈 *PNL REPORT*\n\n━━━━━━━━━━━━━━━━━━\n💰 *OVERALL PERFORMANCE*\n${totalEmoji} *Total PNL: ${totalSign}$${Math.abs(totalPnl).toFixed(2)}*\n📊 Trades: ${totalTrades} (🟢${buyTrades} buys | 🔴${sellTrades} sells)\n✅ Wins: ${profitableTrades} | ❌ Losses: ${lossTrades}\n🎯 Win Rate: ${winRate}%\n💵 Volume: $${totalVolume.toFixed(2)}\n\n━━━━━━━━━━━━━━━━━━\n⏰ *LAST 24 HOURS*\n${pnl24hEmoji} PNL: ${pnl24hSign}$${Math.abs(pnl24h).toFixed(2)}\n📊 Trades: ${trades24h.length}\n\n━━━━━━━━━━━━━━━━━━\n🪙 *TOP TOKENS*${tokenBreakdown}\n━━━━━━━━━━━━━━━━━━`;
+    const message = `📈 *PNL REPORT*\n\n━━━━━━━━━━━━━━━━━━\n💰 *OVERALL PERFORMANCE*\n${totalEmoji} *Total PNL (closed): ${totalSign}$${Math.abs(totalPnl).toFixed(2)}*\n${openEmoji} *Open PNL: ${openSign}$${Math.abs(openPnl).toFixed(2)}*\n📊 Trades: ${totalTrades} (🟢${buyTrades} buys | 🔴${sellTrades} sells)\n✅ Wins: ${profitableTrades} | ❌ Losses: ${lossTrades}\n🎯 Win Rate: ${winRate}%\n💵 Volume: $${totalVolume.toFixed(2)}\n\n━━━━━━━━━━━━━━━━━━\n⏰ *LAST 24 HOURS*\n${pnl24hEmoji} PNL (closed): ${pnl24hSign}$${Math.abs(pnl24h).toFixed(2)}\n📊 Trades: ${trades24h.length}\n\n━━━━━━━━━━━━━━━━━━\n🪙 *TOP TOKENS*${tokenBreakdown}\n━━━━━━━━━━━━━━━━━━`;
     const keyboard = Markup.inlineKeyboard([
       [Markup.button.callback('📜 Full History', 'menu_history')],
       [Markup.button.callback('📥 Export CSV', 'export_pnl_csv')],
@@ -2099,6 +2251,7 @@ bot.action(/^dca_(.+)$/, async (ctx) => { const token = ctx.match[1]; const sess
 // ======================= ALERT ENGINE =======================
 async function checkAllAlerts() {
   console.log('🔔 Checking alerts...');
+  const pairCache = new Map();
   for (const [userId, session] of userSessions.entries()) {
     const alerts = session.alerts || [];
     if (!alerts.length) continue;
@@ -2106,7 +2259,11 @@ async function checkAllAlerts() {
     for (let i = 0; i < alerts.length; i++) {
       const alert = alerts[i];
       try {
-        const pair = await fetchTokenData(alert.token);
+        let pair = pairCache.get(alert.token);
+        if (pair === undefined) {
+          pair = await fetchTokenData(alert.token);
+          pairCache.set(alert.token, pair || null);
+        }
         if (!pair) continue;
         const currentPrice = parseFloat(pair.priceUsd) || 0;
         let isMet = false;
@@ -2122,8 +2279,11 @@ async function checkAllAlerts() {
             isMet = true;
           }
         } else if (alert.type === 'mcap') {
-          const mcap = pair.marketCap || pair.fdv || 0;
-          if (mcap >= alert.threshold) isMet = true;
+          const mcap = Number(pair.marketCap ?? pair.fdv ?? 0) || 0;
+          if ((alert.direction === 'below' && mcap <= alert.threshold) ||
+              (alert.direction !== 'below' && mcap >= alert.threshold)) {
+            isMet = true;
+          }
         }
         if (alert.wasMet === undefined) {
           alert.wasMet = isMet;
@@ -2153,10 +2313,10 @@ async function checkAllAlerts() {
   }
 }
 
-// ======================= BACKGROUND MONITORING =======================
+const ALERT_POLL_MS = Math.max(2000, parseInt(process.env.ALERT_POLL_MS || '5000'));
 setInterval(() => {
   checkAllAlerts().catch(console.error);
-}, 30000);
+}, ALERT_POLL_MS);
 
 // ======================= COMMANDS =======================
 bot.command('start', async (ctx) => { await showMainMenu(ctx); });
@@ -2617,7 +2777,22 @@ You can view and manage all your wallets anytime from the wallet section.`, { pa
             alert.wasMet = false;
           }
         }
-        if (type === 'percent') alert.direction = thresh >= 0 ? 'above' : 'below';
+        if (type === 'percent') {
+          alert.direction = thresh >= 0 ? 'above' : 'below';
+          const pair = await fetchTokenData(token);
+          const change24 = pair?.priceChange?.h24 || 0;
+          alert.wasMet = alert.direction === 'above' ? change24 >= alert.threshold : change24 <= -alert.threshold;
+        }
+        if (type === 'mcap') {
+          const pair = await fetchTokenData(token);
+          const mcap = Number(pair?.marketCap ?? pair?.fdv ?? 0) || 0;
+          if (mcap > 0) {
+            alert.direction = alert.threshold >= mcap ? 'above' : 'below';
+            alert.wasMet = alert.direction === 'above' ? mcap >= alert.threshold : mcap <= alert.threshold;
+          } else {
+            alert.wasMet = false;
+          }
+        }
         alerts.push(alert);
         saveSessions();
         await ctx.reply(`✅ Alert set for ${shortenAddress(token)}: ${type} ${alert.direction==='above'?'>':'<'} ${Math.abs(thresh)}${type==='percent'?'%':type==='mcap'?' MCAP':' USD'}`);
