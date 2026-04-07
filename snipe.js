@@ -1,6 +1,6 @@
 // ============================================
 // PEGASUS TRADING BOT - Complete Implementation
-// with Debug Logging & Professional Messages
+// with Debug Logging & Professional Messages 
 // ============================================
 import { Telegraf, Markup } from 'telegraf';
 import {
